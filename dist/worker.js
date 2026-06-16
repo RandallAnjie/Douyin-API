@@ -2126,11 +2126,28 @@ async function cacheDebugService(request, ctx) {
   if (!bucket) return rawJsonResponse(r);
   const key = "meta/_debug.json";
   const payload = JSON.stringify({ t: Date.now(), hello: "world" });
+  const tryPut = async (label, k, val, opts) => {
+    try {
+      await bucket.put(k, val, opts);
+      r[label] = "ok";
+    } catch (e) {
+      r[label] = String(e?.message || e);
+      if (e?.cause) r[label + "_cause"] = String(e.cause?.message || e.cause);
+      if (e?.stack) r[label + "_stack"] = String(e.stack).split("\n").slice(0, 3).join(" | ");
+    }
+  };
+  await tryPut("put_str_opts", key, payload, { httpMetadata: { contentType: "application/json" } });
+  await tryPut("put_str_plain", "debug_plain.txt", "hello");
+  await tryPut("put_ab", "debug_ab.bin", new TextEncoder().encode("hello").buffer);
+  await tryPut("put_root", "_dbg.txt", "x");
   try {
-    await bucket.put(key, payload, { httpMetadata: { contentType: "application/json" } });
-    r.putOk = true;
+    if (typeof bucket.list === "function") {
+      const l = await bucket.list({ limit: 3 });
+      r.listOk = true;
+      r.listCount = l?.objects?.length;
+    } else r.listOk = "no list fn";
   } catch (e) {
-    r.putErr = String(e?.message || e);
+    r.listErr = String(e?.message || e);
   }
   try {
     const head = await bucket.head(key);
