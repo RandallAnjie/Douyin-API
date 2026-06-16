@@ -153,6 +153,12 @@ function jsonResponse(data, { status = 200, headers: headers2 = {}, router: rout
     headers: { "content-type": "application/json; charset=utf-8", ...headers2 }
   });
 }
+function rawJsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" }
+  });
+}
 
 // src/lib/sha1.js
 var rol = (n, c) => (n << c | n >>> 32 - c) >>> 0;
@@ -2102,6 +2108,65 @@ function withDisposition(resp, download, platform, id, kind, ext) {
   return new Response(resp.body, { status: resp.status, headers: headers2 });
 }
 
+// src/service/debug.js
+async function cacheDebugService(request, ctx) {
+  const url = new URL(request.url);
+  if ((url.searchParams.get("token") || "") !== ctx.config.auth.token) {
+    throw new HTTPException(401, { message: "token required" });
+  }
+  const bucket = ctx.config.mediaR2;
+  const r = {
+    waitUntil: typeof ctx.waitUntil,
+    bucketBound: !!bucket,
+    bucketType: typeof bucket,
+    hasPut: typeof bucket?.put,
+    hasGet: typeof bucket?.get,
+    hasHead: typeof bucket?.head
+  };
+  if (!bucket) return rawJsonResponse(r);
+  const key = "meta/_debug.json";
+  const payload = JSON.stringify({ t: Date.now(), hello: "world" });
+  try {
+    await bucket.put(key, payload, { httpMetadata: { contentType: "application/json" } });
+    r.putOk = true;
+  } catch (e) {
+    r.putErr = String(e?.message || e);
+  }
+  try {
+    const head = await bucket.head(key);
+    r.headFound = !!head;
+    r.headSize = head?.size;
+    r.headUploaded = head?.uploaded ? String(head.uploaded) : null;
+  } catch (e) {
+    r.headErr = String(e?.message || e);
+  }
+  try {
+    const obj = await bucket.get(key);
+    r.getFound = !!obj;
+    r.getUploaded = obj?.uploaded ? String(obj.uploaded) : null;
+    if (obj) {
+      try {
+        r.readText = await obj.text();
+      } catch (e) {
+        r.readTextErr = String(e?.message || e);
+      }
+      try {
+        if (obj.body) r.readBody = await new Response(obj.body).text();
+      } catch (e) {
+        r.readBodyErr = String(e?.message || e);
+      }
+      try {
+        if (typeof obj.json === "function") r.readJson = await obj.json();
+      } catch (e) {
+        r.readJsonErr = String(e?.message || e);
+      }
+    }
+  } catch (e) {
+    r.getErr = String(e?.message || e);
+  }
+  return rawJsonResponse(r);
+}
+
 // src/service/app.js
 async function appService(request, ctx) {
   return new Response(PAGE, {
@@ -2442,6 +2507,9 @@ async function router(request, ctx) {
   }
   if (pathname === "/proxy") {
     return proxyService(request, ctx);
+  }
+  if (pathname === "/__cachedebug") {
+    return cacheDebugService(request, ctx);
   }
   throw new HTTPException(404, { message: `No route for ${pathname}` });
 }
