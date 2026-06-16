@@ -4,7 +4,12 @@ import { sign, canonical } from './auth.js'
 
 export function proxyBase (request, ctx) {
   const u = new URL(request.url)
-  return `${u.origin}${ctx.config.http.prefix}`
+  // The edge terminates TLS and forwards plain HTTP to workerd, so
+  // request.url is http://. Use the forwarded proto (or default https)
+  // and the forwarded host so rewritten links point at the public URL.
+  const proto = request.headers.get('x-forwarded-proto') || 'https'
+  const host = request.headers.get('x-forwarded-host') || u.host
+  return `${proto}://${host}${ctx.config.http.prefix}`
 }
 
 export function proxyLink (request, ctx, platform, id, kind) {

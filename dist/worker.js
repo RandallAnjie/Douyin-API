@@ -1943,7 +1943,9 @@ var pickUrl = (v) => typeof v === "string" ? v : v?.url_list?.[0] ?? null;
 // src/utils/proxy-link.js
 function proxyBase(request, ctx) {
   const u = new URL(request.url);
-  return `${u.origin}${ctx.config.http.prefix}`;
+  const proto = request.headers.get("x-forwarded-proto") || "https";
+  const host = request.headers.get("x-forwarded-host") || u.host;
+  return `${proto}://${host}${ctx.config.http.prefix}`;
 }
 function proxyLink(request, ctx, platform, id, kind) {
   const auth = sign(canonical("proxy", platform, id), ctx.config.auth.token);
