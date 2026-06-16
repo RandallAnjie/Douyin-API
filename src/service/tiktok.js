@@ -3,12 +3,12 @@ import { HTTPException } from '../utils/http-exception.js'
 import { jsonResponse } from '../utils/respond.js'
 import { requireAuth } from '../utils/auth.js'
 import * as web from '../tiktok/web/crawler.js'
-import * as app from '../tiktok/app/crawler.js'
 import { getXBogus } from '../sign/xbogus.js'
 import { genRandomStr } from '../utils/tokens.js'
 import {
   getTiktokAwemeId, getTiktokUniqueId, extractValidUrl
 } from '../utils/ids.js'
+import { fetchTiktokAwemeCached } from '../utils/meta-cache.js'
 
 const PLATFORM = 'tiktok'
 const q = (request, key, dflt = '') => new URL(request.url).searchParams.get(key) ?? dflt
@@ -143,7 +143,9 @@ export async function tiktokAppService (route, request, ctx) {
   if (request.method === 'GET' && route === 'fetch_one_video') {
     const awemeId = requireQ(request, 'aweme_id')
     requireAuth(request, ctx, PLATFORM, 'app_fetch_one_video', awemeId)
-    return jsonResponse(await app.fetchOneVideo(ctx, awemeId), { router: `app/${route}` })
+    const refresh = ['1', 'true', 'yes', 'on'].includes(String(q(request, 'refresh')).toLowerCase())
+    const { data, cached } = await fetchTiktokAwemeCached(ctx, awemeId, refresh)
+    return jsonResponse(data, { router: `app/${route}`, headers: { 'x-cache': cached ? 'hit' : 'miss' } })
   }
   throw new HTTPException(404, { message: `Unknown tiktok/app route: ${route}` })
 }

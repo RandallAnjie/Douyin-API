@@ -1,10 +1,9 @@
 // Hybrid parser — port of crawlers/hybrid/hybrid_crawler.py (douyin +
 // tiktok branches; bilibili is out of scope). Detects the platform
-// from the URL, calls the right crawler, and — when minimal=true —
-// maps the result into the unified schema the upstream returns.
+// from the URL, fetches the (cached) raw metadata, and — when
+// minimal=true — maps it into the unified schema the upstream returns.
 import { getAwemeId, getTiktokAwemeId } from '../utils/ids.js'
-import * as douyin from '../douyin/crawler.js'
-import * as tiktokApp from '../tiktok/app/crawler.js'
+import { fetchDouyinDetailCached, fetchTiktokAwemeCached } from '../utils/meta-cache.js'
 import { HTTPException } from '../utils/http-exception.js'
 
 const URL_TYPE = {
@@ -13,29 +12,39 @@ const URL_TYPE = {
   51: 'video', 55: 'video', 58: 'video', 61: 'video', 150: 'image' // TikTok
 }
 
-export async function hybridParseSingleVideo (ctx, url, minimal = false) {
-  let platform, videoId, data, awemeType
+export function detectPlatform (url) {
+  if (url.includes('douyin')) return 'douyin'
+  if (url.includes('tiktok')) return 'tiktok'
+  return null
+}
 
-  if (url.includes('douyin')) {
-    platform = 'douyin'
-    videoId = await getAwemeId(url)
-    const resp = await douyin.fetchOneVideo(ctx, videoId)
-    data = resp.aweme_detail
-    if (!data) throw new HTTPException(502, { message: 'Douyin returned no aweme_detail (bad cookie/signature?)' })
-    awemeType = data.aweme_type
-  } else if (url.includes('tiktok')) {
-    platform = 'tiktok'
-    videoId = await getTiktokAwemeId(url)
-    // 2024-09-14 upstream switched TikTok to the app crawler.
-    data = await tiktokApp.fetchOneVideo(ctx, videoId)
-    awemeType = data.aweme_type
-  } else {
-    throw new HTTPException(400, { message: 'Cannot determine platform (expected a douyin or tiktok URL)' })
+// Resolve a share URL to { platform, id }.
+export async function resolvePlatformId (url) {
+  const platform = detectPlatform(url)
+  if (platform === 'douyin') return { platform, id: await getAwemeId(url) }
+  if (platform === 'tiktok') return { platform, id: await getTiktokAwemeId(url) }
+  throw new HTTPException(400, { message: 'Cannot determine platform (expected a douyin or tiktok URL)' })
+}
+
+// Fetch the raw aweme detail by platform + id (cached). Returns
+// { raw, cached }.
+export async function fetchRawById (ctx, platform, id, refresh = false) {
+  if (platform === 'douyin') {
+    const { data, cached } = await fetchDouyinDetailCached(ctx, id, refresh)
+    const raw = data.aweme_detail
+    if (!raw) throw new HTTPException(502, { message: 'Douyin returned no aweme_detail (bad cookie/signature?)' })
+    return { raw, cached }
   }
+  if (platform === 'tiktok') {
+    const { data, cached } = await fetchTiktokAwemeCached(ctx, id, refresh)
+    return { raw: data, cached }
+  }
+  throw new HTTPException(400, { message: `Unknown platform: ${platform}` })
+}
 
-  if (!minimal) return data
-
-  const type = URL_TYPE[awemeType] || 'video'
+// Pure mapper: raw aweme detail -> unified minimal schema.
+export function toMinimal (platform, videoId, data) {
+  const type = URL_TYPE[data.aweme_type] || 'video'
   const result = {
     type,
     platform,
@@ -89,6 +98,40 @@ export async function hybridParseSingleVideo (ctx, url, minimal = false) {
       result.image_data = { no_watermark_image_list: nwm, watermark_image_list: wm }
     }
   }
-
   return result
 }
+
+export async function hybridParseSingleVideo (ctx, url, minimal = false, refresh = false) {
+  const { platform, id } = await resolvePlatformId(url)
+  const { raw } = await fetchRawById(ctx, platform, id, refresh)
+  if (!minimal) return raw
+  return toMinimal(platform, id, raw)
+}
+
+// Pick a concrete CDN URL from a minimal result for a proxy `kind`.
+// kinds: nwm | wm | cover | image<N> | imagewm<N>
+export function resolveKindUrl (minimal, kind) {
+  const isImageKind = /^imagewm?\d+$/.test(kind)
+  if (kind === 'nwm' || kind === 'wm') {
+    const vd = minimal.video_data
+    if (!vd) throw new HTTPException(404, { message: 'No video for this resource' })
+    const url = kind === 'nwm'
+      ? (vd.nwm_video_url_HQ || vd.nwm_video_url)
+      : (vd.wm_video_url_HQ || vd.wm_video_url)
+    return { url, contentType: 'video/mp4', ext: 'mp4' }
+  }
+  if (kind === 'cover') {
+    const url = minimal.cover_data?.cover?.url_list?.[0] || minimal.cover_data?.cover
+    return { url: pickUrl(url), contentType: 'image/jpeg', ext: 'jpeg' }
+  }
+  if (isImageKind) {
+    const wm = kind.startsWith('imagewm')
+    const idx = Number(kind.replace(/^imagewm?/, ''))
+    const list = wm ? minimal.image_data?.watermark_image_list : minimal.image_data?.no_watermark_image_list
+    if (!list || !list[idx]) throw new HTTPException(404, { message: `No image at index ${idx}` })
+    return { url: list[idx], contentType: 'image/jpeg', ext: 'jpeg' }
+  }
+  throw new HTTPException(400, { message: `Unknown kind: ${kind}` })
+}
+
+const pickUrl = (v) => (typeof v === 'string' ? v : (v?.url_list?.[0] ?? null))

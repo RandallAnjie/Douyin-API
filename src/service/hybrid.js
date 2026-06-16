@@ -3,6 +3,7 @@ import { HTTPException } from '../utils/http-exception.js'
 import { jsonResponse } from '../utils/respond.js'
 import { requireAuth } from '../utils/auth.js'
 import { hybridParseSingleVideo } from '../hybrid/crawler.js'
+import { rewriteMinimalToProxy } from '../utils/proxy-link.js'
 
 const PLATFORM = 'hybrid'
 const truthy = (v) => ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase())
@@ -14,8 +15,13 @@ export async function hybridService (route, request, ctx) {
     if (!target) throw new HTTPException(400, { message: 'Missing query param: url' })
     requireAuth(request, ctx, PLATFORM, 'video_data', target)
     const minimal = truthy(url.searchParams.get('minimal') ?? 'false')
-    const data = await hybridParseSingleVideo(ctx, target, minimal)
-    return jsonResponse(data, { router: 'hybrid/video_data', params: { url: target, minimal } })
+    const refresh = truthy(url.searchParams.get('refresh') ?? 'false')
+    // ?proxy=1 rewrites media URLs to cached /proxy self-links (needs
+    // minimal=true since the unified schema is what carries the urls).
+    const proxy = truthy(url.searchParams.get('proxy') ?? 'false')
+    let data = await hybridParseSingleVideo(ctx, target, minimal, refresh)
+    if (minimal && proxy) data = rewriteMinimalToProxy(data, request, ctx)
+    return jsonResponse(data, { router: 'hybrid/video_data', params: { url: target, minimal, proxy } })
   }
 
   if (request.method === 'POST' && route === 'update_cookie') {

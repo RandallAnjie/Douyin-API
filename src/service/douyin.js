@@ -13,8 +13,10 @@ import {
 import { getXBogus } from '../sign/xbogus.js'
 import { getABogus } from '../sign/abogus.js'
 import { urlencode } from '../utils/params.js'
+import { fetchDouyinDetailCached } from '../utils/meta-cache.js'
 
 const PLATFORM = 'douyin'
+const truthy = (v) => ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase())
 const q = (request, key, dflt = '') => new URL(request.url).searchParams.get(key) ?? dflt
 const requireQ = (request, key) => {
   const v = new URL(request.url).searchParams.get(key)
@@ -29,7 +31,8 @@ export default async function douyinWebService (route, request, ctx) {
   if (method === 'GET' && route === 'fetch_one_video') {
     const awemeId = requireQ(request, 'aweme_id')
     requireAuth(request, ctx, PLATFORM, route, awemeId)
-    return jsonResponse(await crawler.fetchOneVideo(ctx, awemeId), { router: route, params: { aweme_id: awemeId } })
+    const { data, cached } = await fetchDouyinDetailCached(ctx, awemeId, truthy(q(request, 'refresh')))
+    return jsonResponse(data, { router: route, params: { aweme_id: awemeId }, headers: { 'x-cache': cached ? 'hit' : 'miss' } })
   }
   if (method === 'GET' && route === 'fetch_user_post_videos') {
     const secUserId = requireQ(request, 'sec_user_id')

@@ -12,6 +12,11 @@
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36'
 
+const toNumber = (value, fallback) => {
+  const parsed = Number.parseInt(value, 10)
+  return Number.isNaN(parsed) ? fallback : parsed
+}
+
 export function buildConfig (env) {
   env = env || {}
   return {
@@ -33,6 +38,17 @@ export function buildConfig (env) {
     tiktok: {
       cookie: env.TIKTOK_COOKIE || '',
       userAgent: env.TIKTOK_USER_AGENT || env.DEFAULT_USER_AGENT || DEFAULT_UA
+    },
+    // R2 bucket binding for caching media bytes + metadata JSON. When
+    // bound, /proxy serves video/image bytes from R2 (content keyed by
+    // platform/id/kind, so signed-CDN-url rotation still hits cache),
+    // and parsed video metadata is cached as JSON files under meta/.
+    // Absent (null) → everything still works, just uncached.
+    mediaR2: env.DOUYIN_R2 || env.MEDIA_R2 || null,
+    cache: {
+      // Metadata JSON freshness in seconds (default 1h). ?refresh=1
+      // on a request bypasses + repopulates.
+      metaTtl: toNumber(env.META_CACHE_TTL, 3600)
     },
     log: {
       level: env.LOG_LEVEL || 'info'

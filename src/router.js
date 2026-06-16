@@ -12,6 +12,7 @@
 import douyinWebService from './service/douyin.js'
 import { tiktokWebService, tiktokAppService } from './service/tiktok.js'
 import { hybridService, downloadService } from './service/hybrid.js'
+import { proxyService } from './service/proxy.js'
 import docsService from './service/docs.js'
 import { HTTPException } from './utils/http-exception.js'
 
@@ -43,6 +44,9 @@ export async function router (request, ctx) {
   }
   if (pathname === '/download') {
     return downloadService(request, ctx)
+  }
+  if (pathname === '/proxy') {
+    return proxyService(request, ctx)
   }
 
   throw new HTTPException(404, { message: `No route for ${pathname}` })

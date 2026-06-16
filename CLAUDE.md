@@ -40,9 +40,31 @@ src/utils/        auth, params (urlencode/rawJoin + default param sets),
 src/douyin/       endpoints + crawler
 src/tiktok/web/   endpoints + crawler   (X-Bogus)
 src/tiktok/app/   crawler               (api22 feed, no signature)
-src/hybrid/       crawler (detect + minimal field mapping)
-src/service/      douyin.js / tiktok.js / hybrid.js / docs.js  (route handlers + auth)
+src/hybrid/       crawler (detect + by-id fetch + pure toMinimal mapper + resolveKindUrl)
+src/service/      douyin.js / tiktok.js / hybrid.js / proxy.js / docs.js  (route handlers + auth)
+src/utils/r2cache.js    R2 bytes (serveFromR2/teeIntoCache/cachePopulateAside) + JSON (getJson/putJson)
+src/utils/meta-cache.js cached douyin/tiktok fetchers (meta/{platform}/{id}.json, TTL via R2 uploaded)
+src/utils/proxy-link.js rewrite minimal media URLs -> /proxy self-links with per-resource HMAC
 ```
+
+## Reverse proxy + R2 cache
+
+Optional, gated on the `DOUYIN_R2` binding (config `mediaR2`); when
+unbound everything degrades to uncached real-time fetches.
+
+- **Metadata cache**: parsed video info as JSON at `meta/{platform}/{id}.json`,
+  TTL `config.cache.metaTtl` (`META_CACHE_TTL`, default 1h), freshness
+  from R2's `uploaded` time. Used by `fetch_one_video` (douyin + tiktok
+  app), `hybrid/video_data`, `/proxy`. `?refresh=1` bypasses.
+- **Media proxy** `/proxy?platform=&id=&kind=`: cache key is the STABLE
+  id (`media/{platform}/{id}/{kind}`), NOT the signed CDN URL — so hits
+  survive URL rotation. Resolves the live URL from cached metadata on
+  miss via `hybrid/crawler.js` `fetchRawById`+`toMinimal`+`resolveKindUrl`.
+  Range supported (cachePopulateAside for range misses).
+- Proxy auth canonical is `"proxy{platform}{id}"` (kind-independent).
+  `video_data?proxy=1` rewrites media URLs to `/proxy?...&auth=` links
+  (per-resource HMAC, never the master token).
+- `test/r2-live.mjs` exercises this against live Douyin + a fake R2.
 
 ## Signatures — the load-bearing part
 

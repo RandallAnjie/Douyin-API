@@ -944,8 +944,215 @@ async function getTiktokUniqueId(rawUrl) {
   throw new HTTPException(404, { message: `unique_id not found in ${finalUrl}` });
 }
 
+// src/utils/r2cache.js
+var mediaKey = (platform, id, kind) => `media/${platform}/${encodeURIComponent(String(id))}/${kind}`;
+var metaKey = (platform, id) => `meta/${platform}/${encodeURIComponent(String(id))}.json`;
+function parseRangeHeader(header, totalSize) {
+  if (!header) return null;
+  const m = String(header).trim().match(/^bytes=(\d+)-(\d*)$/i);
+  if (!m) return null;
+  const start = Number(m[1]);
+  const end = m[2] === "" ? totalSize - 1 : Number(m[2]);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (start < 0 || start >= totalSize) return null;
+  if (end < start) return null;
+  const cappedEnd = Math.min(end, totalSize - 1);
+  return { start, end: cappedEnd, length: cappedEnd - start + 1 };
+}
+async function serveFromR2(bucket, request, key, contentType) {
+  if (!bucket || typeof bucket.head !== "function") return null;
+  let head;
+  try {
+    head = await bucket.head(key);
+  } catch {
+    return null;
+  }
+  if (!head) return null;
+  const totalSize = Number(head.size) || 0;
+  const storedType = head.httpMetadata?.contentType || contentType || "application/octet-stream";
+  const rangeHeader = request.headers.get("range");
+  const range = rangeHeader ? parseRangeHeader(rangeHeader, totalSize) : null;
+  if (range) {
+    let obj2;
+    try {
+      obj2 = await bucket.get(key, { range: { offset: range.start, length: range.length } });
+    } catch {
+      return null;
+    }
+    if (!obj2) return null;
+    return new Response(obj2.body, {
+      status: 206,
+      headers: {
+        "content-type": storedType,
+        "content-length": String(range.length),
+        "content-range": `bytes ${range.start}-${range.end}/${totalSize}`,
+        "accept-ranges": "bytes",
+        "cache-control": "public, max-age=300",
+        "x-cache-source": "r2"
+      }
+    });
+  }
+  let obj;
+  try {
+    obj = await bucket.get(key);
+  } catch {
+    return null;
+  }
+  if (!obj) return null;
+  return new Response(obj.body, {
+    status: 200,
+    headers: {
+      "content-type": storedType,
+      "content-length": String(totalSize),
+      "accept-ranges": "bytes",
+      "cache-control": "public, max-age=300",
+      "x-cache-source": "r2"
+    }
+  });
+}
+function teeIntoCache(bucket, ctx, key, upstreamResponse, contentType) {
+  if (!bucket || !upstreamResponse.ok || !upstreamResponse.body) return upstreamResponse;
+  const finalType = contentType || upstreamResponse.headers.get("content-type") || "application/octet-stream";
+  const lenHeader = upstreamResponse.headers.get("content-length");
+  const total = lenHeader && /^\d+$/.test(lenHeader) ? Number(lenHeader) : null;
+  let userBranch, r2Branch;
+  try {
+    [userBranch, r2Branch] = upstreamResponse.body.tee();
+  } catch {
+    return upstreamResponse;
+  }
+  const put = bucket.put(key, r2Branch, { httpMetadata: { contentType: finalType } }).catch((e) => {
+    try {
+      console.error("[r2] put failed", key, e?.message || e);
+    } catch {
+    }
+  });
+  if (ctx?.waitUntil) ctx.waitUntil(put);
+  const out = new Headers();
+  out.set("content-type", finalType);
+  if (total != null) out.set("content-length", String(total));
+  out.set("accept-ranges", "bytes");
+  out.set("cache-control", "public, max-age=300");
+  out.set("x-cache-source", "upstream-tee");
+  return new Response(userBranch, { status: upstreamResponse.status, headers: out });
+}
+async function cachePopulateAside(bucket, ctx, key, rangeFetcher, fullFetcher, contentType) {
+  const userPromise = rangeFetcher();
+  if (bucket && ctx?.waitUntil) {
+    ctx.waitUntil((async () => {
+      let full;
+      try {
+        full = await fullFetcher();
+      } catch {
+        return;
+      }
+      if (!full || !full.ok || !full.body) return;
+      const ct = contentType || full.headers.get("content-type") || "application/octet-stream";
+      try {
+        await bucket.put(key, full.body, { httpMetadata: { contentType: ct } });
+      } catch (e) {
+        try {
+          console.error("[r2] aside put failed", key, e?.message || e);
+        } catch {
+        }
+      }
+    })());
+  }
+  return userPromise;
+}
+async function getJson(bucket, key, ttlSeconds) {
+  if (!bucket || typeof bucket.get !== "function") return null;
+  let obj;
+  try {
+    obj = await bucket.get(key);
+  } catch {
+    return null;
+  }
+  if (!obj) return null;
+  if (ttlSeconds && obj.uploaded) {
+    const age = (Date.now() - new Date(obj.uploaded).getTime()) / 1e3;
+    if (age > ttlSeconds) return null;
+  }
+  try {
+    return JSON.parse(await obj.text());
+  } catch {
+    return null;
+  }
+}
+function putJson(bucket, ctx, key, obj) {
+  if (!bucket) return;
+  const body = JSON.stringify(obj);
+  const put = bucket.put(key, body, { httpMetadata: { contentType: "application/json; charset=utf-8" } }).catch((e) => {
+    try {
+      console.error("[r2] json put failed", key, e?.message || e);
+    } catch {
+    }
+  });
+  if (ctx?.waitUntil) ctx.waitUntil(put);
+}
+
+// src/tiktok/app/crawler.js
+var HOME_FEED = "https://api22-normal-c-alisg.tiktokv.com/aweme/v1/feed/";
+function feedParams(awemeId) {
+  return {
+    iid: "7318518857994389254",
+    device_id: "7318517321748022790",
+    channel: "googleplay",
+    app_name: "musical_ly",
+    version_code: "300904",
+    device_platform: "android",
+    device_type: "SM-ASUS_Z01QD",
+    os_version: "9",
+    aweme_id: awemeId
+  };
+}
+async function fetchOneVideo2(ctx, awemeId) {
+  const url = `${HOME_FEED}?${urlencode(feedParams(awemeId))}`;
+  const headers2 = buildHeaders({
+    userAgent: ctx.config.tiktok.userAgent,
+    referer: "https://www.tiktok.com/",
+    cookie: ctx.config.tiktok.cookie || "CykaBlyat=XD",
+    extra: { "x-ladon": "Hello From Evil0ctal!" }
+  });
+  const data = await fetchGetJson(url, headers2);
+  const list = data.aweme_list;
+  if (!Array.isArray(list) || list.length === 0) {
+    throw new HTTPException(404, { message: `No aweme in feed for ${awemeId}` });
+  }
+  const aweme = list[0];
+  if (aweme.aweme_id !== awemeId) {
+    throw new HTTPException(404, { message: `Video ID mismatch (got ${aweme.aweme_id})` });
+  }
+  return aweme;
+}
+
+// src/utils/meta-cache.js
+async function fetchDouyinDetailCached(ctx, awemeId, refresh = false) {
+  const bucket = ctx.config.mediaR2;
+  const key = metaKey("douyin", awemeId);
+  if (bucket && !refresh) {
+    const cached = await getJson(bucket, key, ctx.config.cache.metaTtl);
+    if (cached) return { data: cached, cached: true };
+  }
+  const data = await fetchOneVideo(ctx, awemeId);
+  putJson(bucket, ctx, key, data);
+  return { data, cached: false };
+}
+async function fetchTiktokAwemeCached(ctx, awemeId, refresh = false) {
+  const bucket = ctx.config.mediaR2;
+  const key = metaKey("tiktok", awemeId);
+  if (bucket && !refresh) {
+    const cached = await getJson(bucket, key, ctx.config.cache.metaTtl);
+    if (cached) return { data: cached, cached: true };
+  }
+  const data = await fetchOneVideo2(ctx, awemeId);
+  putJson(bucket, ctx, key, data);
+  return { data, cached: false };
+}
+
 // src/service/douyin.js
 var PLATFORM = "douyin";
+var truthy = (v) => ["1", "true", "yes", "on"].includes(String(v).toLowerCase());
 var q = (request, key, dflt = "") => new URL(request.url).searchParams.get(key) ?? dflt;
 var requireQ = (request, key) => {
   const v = new URL(request.url).searchParams.get(key);
@@ -957,7 +1164,8 @@ async function douyinWebService(route, request, ctx) {
   if (method === "GET" && route === "fetch_one_video") {
     const awemeId = requireQ(request, "aweme_id");
     requireAuth(request, ctx, PLATFORM, route, awemeId);
-    return jsonResponse(await fetchOneVideo(ctx, awemeId), { router: route, params: { aweme_id: awemeId } });
+    const { data, cached } = await fetchDouyinDetailCached(ctx, awemeId, truthy(q(request, "refresh")));
+    return jsonResponse(data, { router: route, params: { aweme_id: awemeId }, headers: { "x-cache": cached ? "hit" : "miss" } });
   }
   if (method === "GET" && route === "fetch_user_post_videos") {
     const secUserId = requireQ(request, "sec_user_id");
@@ -1152,7 +1360,7 @@ async function xbGet(ctx, baseUrl, params) {
   const url = `${baseUrl}?${paramStr}&X-Bogus=${xBogus}`;
   return fetchGetJson(url, headers(ctx));
 }
-function fetchOneVideo2(ctx, itemId) {
+function fetchOneVideo3(ctx, itemId) {
   return xbGet(ctx, TikTokWebEndpoints.POST_DETAIL, { ...baseParams(fakeMsToken()), itemId });
 }
 function fetchUserProfile(ctx, secUid, uniqueId) {
@@ -1267,41 +1475,6 @@ function fetchUserPlayList(ctx, secUid, cursor, count) {
   });
 }
 
-// src/tiktok/app/crawler.js
-var HOME_FEED = "https://api22-normal-c-alisg.tiktokv.com/aweme/v1/feed/";
-function feedParams(awemeId) {
-  return {
-    iid: "7318518857994389254",
-    device_id: "7318517321748022790",
-    channel: "googleplay",
-    app_name: "musical_ly",
-    version_code: "300904",
-    device_platform: "android",
-    device_type: "SM-ASUS_Z01QD",
-    os_version: "9",
-    aweme_id: awemeId
-  };
-}
-async function fetchOneVideo3(ctx, awemeId) {
-  const url = `${HOME_FEED}?${urlencode(feedParams(awemeId))}`;
-  const headers2 = buildHeaders({
-    userAgent: ctx.config.tiktok.userAgent,
-    referer: "https://www.tiktok.com/",
-    cookie: ctx.config.tiktok.cookie || "CykaBlyat=XD",
-    extra: { "x-ladon": "Hello From Evil0ctal!" }
-  });
-  const data = await fetchGetJson(url, headers2);
-  const list = data.aweme_list;
-  if (!Array.isArray(list) || list.length === 0) {
-    throw new HTTPException(404, { message: `No aweme in feed for ${awemeId}` });
-  }
-  const aweme = list[0];
-  if (aweme.aweme_id !== awemeId) {
-    throw new HTTPException(404, { message: `Video ID mismatch (got ${aweme.aweme_id})` });
-  }
-  return aweme;
-}
-
 // src/service/tiktok.js
 var PLATFORM2 = "tiktok";
 var q2 = (request, key, dflt = "") => new URL(request.url).searchParams.get(key) ?? dflt;
@@ -1342,7 +1515,7 @@ async function tiktokWebService(route, request, ctx) {
   if (method === "GET" && route === "fetch_one_video") {
     const itemId = requireQ2(request, "itemId");
     requireAuth(request, ctx, PLATFORM2, route, itemId);
-    return jsonResponse(await fetchOneVideo2(ctx, itemId), { router: route });
+    return jsonResponse(await fetchOneVideo3(ctx, itemId), { router: route });
   }
   if (method === "GET" && route === "fetch_user_profile") {
     const secUid = q2(request, "secUid", "");
@@ -1427,7 +1600,9 @@ async function tiktokAppService(route, request, ctx) {
   if (request.method === "GET" && route === "fetch_one_video") {
     const awemeId = requireQ2(request, "aweme_id");
     requireAuth(request, ctx, PLATFORM2, "app_fetch_one_video", awemeId);
-    return jsonResponse(await fetchOneVideo3(ctx, awemeId), { router: `app/${route}` });
+    const refresh = ["1", "true", "yes", "on"].includes(String(q2(request, "refresh")).toLowerCase());
+    const { data, cached } = await fetchTiktokAwemeCached(ctx, awemeId, refresh);
+    return jsonResponse(data, { router: `app/${route}`, headers: { "x-cache": cached ? "hit" : "miss" } });
   }
   throw new HTTPException(404, { message: `Unknown tiktok/app route: ${route}` });
 }
@@ -1458,25 +1633,32 @@ var URL_TYPE = {
   150: "image"
   // TikTok
 };
-async function hybridParseSingleVideo(ctx, url, minimal = false) {
-  let platform, videoId, data, awemeType;
-  if (url.includes("douyin")) {
-    platform = "douyin";
-    videoId = await getAwemeId(url);
-    const resp = await fetchOneVideo(ctx, videoId);
-    data = resp.aweme_detail;
-    if (!data) throw new HTTPException(502, { message: "Douyin returned no aweme_detail (bad cookie/signature?)" });
-    awemeType = data.aweme_type;
-  } else if (url.includes("tiktok")) {
-    platform = "tiktok";
-    videoId = await getTiktokAwemeId(url);
-    data = await fetchOneVideo3(ctx, videoId);
-    awemeType = data.aweme_type;
-  } else {
-    throw new HTTPException(400, { message: "Cannot determine platform (expected a douyin or tiktok URL)" });
+function detectPlatform(url) {
+  if (url.includes("douyin")) return "douyin";
+  if (url.includes("tiktok")) return "tiktok";
+  return null;
+}
+async function resolvePlatformId(url) {
+  const platform = detectPlatform(url);
+  if (platform === "douyin") return { platform, id: await getAwemeId(url) };
+  if (platform === "tiktok") return { platform, id: await getTiktokAwemeId(url) };
+  throw new HTTPException(400, { message: "Cannot determine platform (expected a douyin or tiktok URL)" });
+}
+async function fetchRawById(ctx, platform, id, refresh = false) {
+  if (platform === "douyin") {
+    const { data, cached } = await fetchDouyinDetailCached(ctx, id, refresh);
+    const raw = data.aweme_detail;
+    if (!raw) throw new HTTPException(502, { message: "Douyin returned no aweme_detail (bad cookie/signature?)" });
+    return { raw, cached };
   }
-  if (!minimal) return data;
-  const type = URL_TYPE[awemeType] || "video";
+  if (platform === "tiktok") {
+    const { data, cached } = await fetchTiktokAwemeCached(ctx, id, refresh);
+    return { raw: data, cached };
+  }
+  throw new HTTPException(400, { message: `Unknown platform: ${platform}` });
+}
+function toMinimal(platform, videoId, data) {
+  const type = URL_TYPE[data.aweme_type] || "video";
   const result = {
     type,
     platform,
@@ -1533,19 +1715,85 @@ async function hybridParseSingleVideo(ctx, url, minimal = false) {
   }
   return result;
 }
+async function hybridParseSingleVideo(ctx, url, minimal = false, refresh = false) {
+  const { platform, id } = await resolvePlatformId(url);
+  const { raw } = await fetchRawById(ctx, platform, id, refresh);
+  if (!minimal) return raw;
+  return toMinimal(platform, id, raw);
+}
+function resolveKindUrl(minimal, kind) {
+  const isImageKind = /^imagewm?\d+$/.test(kind);
+  if (kind === "nwm" || kind === "wm") {
+    const vd = minimal.video_data;
+    if (!vd) throw new HTTPException(404, { message: "No video for this resource" });
+    const url = kind === "nwm" ? vd.nwm_video_url_HQ || vd.nwm_video_url : vd.wm_video_url_HQ || vd.wm_video_url;
+    return { url, contentType: "video/mp4", ext: "mp4" };
+  }
+  if (kind === "cover") {
+    const url = minimal.cover_data?.cover?.url_list?.[0] || minimal.cover_data?.cover;
+    return { url: pickUrl(url), contentType: "image/jpeg", ext: "jpeg" };
+  }
+  if (isImageKind) {
+    const wm = kind.startsWith("imagewm");
+    const idx = Number(kind.replace(/^imagewm?/, ""));
+    const list = wm ? minimal.image_data?.watermark_image_list : minimal.image_data?.no_watermark_image_list;
+    if (!list || !list[idx]) throw new HTTPException(404, { message: `No image at index ${idx}` });
+    return { url: list[idx], contentType: "image/jpeg", ext: "jpeg" };
+  }
+  throw new HTTPException(400, { message: `Unknown kind: ${kind}` });
+}
+var pickUrl = (v) => typeof v === "string" ? v : v?.url_list?.[0] ?? null;
+
+// src/utils/proxy-link.js
+function proxyBase(request, ctx) {
+  const u = new URL(request.url);
+  return `${u.origin}${ctx.config.http.prefix}`;
+}
+function proxyLink(request, ctx, platform, id, kind) {
+  const auth = sign(canonical("proxy", platform, id), ctx.config.auth.token);
+  const params = new URLSearchParams({ platform, id: String(id), kind, auth });
+  return `${proxyBase(request, ctx)}/proxy?${params.toString()}`;
+}
+function rewriteMinimalToProxy(minimal, request, ctx) {
+  const { platform, video_id: id } = minimal;
+  if (minimal.video_data) {
+    const nwm = proxyLink(request, ctx, platform, id, "nwm");
+    const wm = proxyLink(request, ctx, platform, id, "wm");
+    minimal.video_data = {
+      ...minimal.video_data,
+      nwm_video_url: nwm,
+      nwm_video_url_HQ: nwm,
+      wm_video_url: wm,
+      wm_video_url_HQ: wm
+    };
+  }
+  if (minimal.image_data) {
+    minimal.image_data = {
+      no_watermark_image_list: minimal.image_data.no_watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `image${i}`)),
+      watermark_image_list: minimal.image_data.watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `imagewm${i}`))
+    };
+  }
+  if (minimal.cover_data) {
+    minimal.cover_data = { ...minimal.cover_data, cover: proxyLink(request, ctx, platform, id, "cover") };
+  }
+  return minimal;
+}
 
 // src/service/hybrid.js
 var PLATFORM3 = "hybrid";
-var truthy = (v) => ["1", "true", "yes", "on"].includes(String(v).toLowerCase());
+var truthy2 = (v) => ["1", "true", "yes", "on"].includes(String(v).toLowerCase());
 async function hybridService(route, request, ctx) {
   if (request.method === "GET" && route === "video_data") {
     const url = new URL(request.url);
     const target = url.searchParams.get("url");
     if (!target) throw new HTTPException(400, { message: "Missing query param: url" });
     requireAuth(request, ctx, PLATFORM3, "video_data", target);
-    const minimal = truthy(url.searchParams.get("minimal") ?? "false");
-    const data = await hybridParseSingleVideo(ctx, target, minimal);
-    return jsonResponse(data, { router: "hybrid/video_data", params: { url: target, minimal } });
+    const minimal = truthy2(url.searchParams.get("minimal") ?? "false");
+    const refresh = truthy2(url.searchParams.get("refresh") ?? "false");
+    const proxy = truthy2(url.searchParams.get("proxy") ?? "false");
+    let data = await hybridParseSingleVideo(ctx, target, minimal, refresh);
+    if (minimal && proxy) data = rewriteMinimalToProxy(data, request, ctx);
+    return jsonResponse(data, { router: "hybrid/video_data", params: { url: target, minimal, proxy } });
   }
   if (request.method === "POST" && route === "update_cookie") {
     throw new HTTPException(501, {
@@ -1559,7 +1807,7 @@ async function downloadService(request, ctx) {
   const target = url.searchParams.get("url");
   if (!target) throw new HTTPException(400, { message: "Missing query param: url" });
   requireAuth(request, ctx, PLATFORM3, "download", target);
-  const withWatermark = truthy(url.searchParams.get("with_watermark") ?? "false");
+  const withWatermark = truthy2(url.searchParams.get("with_watermark") ?? "false");
   const data = await hybridParseSingleVideo(ctx, target, true);
   let fileUrl, ext;
   if (data.type === "video") {
@@ -1587,6 +1835,73 @@ async function downloadService(request, ctx) {
   if (len) headers2.set("content-length", len);
   headers2.set("content-disposition", `attachment; filename="${filename}"`);
   return new Response(upstream.body, { status: 200, headers: headers2 });
+}
+
+// src/service/proxy.js
+var REFERER = { douyin: "https://www.douyin.com/", tiktok: "https://www.tiktok.com/" };
+async function proxyService(request, ctx) {
+  const url = new URL(request.url);
+  const platform = url.searchParams.get("platform") || "";
+  const id = url.searchParams.get("id") || url.searchParams.get("aweme_id") || "";
+  const kind = url.searchParams.get("kind") || "nwm";
+  if (!["douyin", "tiktok"].includes(platform)) {
+    throw new HTTPException(400, { message: "platform must be douyin or tiktok" });
+  }
+  if (!id) throw new HTTPException(400, { message: "Missing query param: id" });
+  requireAuth(request, ctx, "proxy", platform, id);
+  const refresh = ["1", "true", "yes"].includes(String(url.searchParams.get("refresh")).toLowerCase());
+  const download = ["1", "true", "yes"].includes(String(url.searchParams.get("download")).toLowerCase());
+  const bucket = ctx.config.mediaR2;
+  const key = mediaKey(platform, id, kind);
+  if (bucket && !refresh) {
+    const hit = await serveFromR2(bucket, request, key);
+    if (hit) return withDisposition(hit, download, platform, id, kind);
+  }
+  const { raw } = await fetchRawById(ctx, platform, id, refresh);
+  const minimal = toMinimal(platform, id, raw);
+  const { url: cdnUrl, contentType, ext } = resolveKindUrl(minimal, kind);
+  if (!cdnUrl) throw new HTTPException(404, { message: `No media url for kind=${kind}` });
+  const reqHeaders = {
+    "User-Agent": platform === "douyin" ? ctx.config.douyin.userAgent : ctx.config.tiktok.userAgent,
+    Referer: REFERER[platform]
+  };
+  const rangeHeader = request.headers.get("range");
+  if (rangeHeader && bucket) {
+    const resp2 = await cachePopulateAside(
+      bucket,
+      ctx,
+      key,
+      () => fetch(cdnUrl, { headers: { ...reqHeaders, range: rangeHeader } }).then((r) => wrapMedia(r, contentType, "upstream-range")),
+      () => fetch(cdnUrl, { headers: reqHeaders }),
+      contentType
+    );
+    return withDisposition(resp2, download, platform, id, kind, ext);
+  }
+  const upstream = await fetch(cdnUrl, { headers: rangeHeader ? { ...reqHeaders, range: rangeHeader } : reqHeaders });
+  if (!upstream.ok || !upstream.body) {
+    throw new HTTPException(502, { message: `Upstream media fetch failed (${upstream.status})` });
+  }
+  const resp = bucket && !rangeHeader ? teeIntoCache(bucket, ctx, key, upstream, contentType) : wrapMedia(upstream, contentType, "upstream-plain");
+  return withDisposition(resp, download, platform, id, kind, ext);
+}
+function wrapMedia(upstream, contentType, source) {
+  const out = new Headers();
+  out.set("content-type", upstream.headers.get("content-type") || contentType || "application/octet-stream");
+  const cl = upstream.headers.get("content-length");
+  if (cl) out.set("content-length", cl);
+  const cr = upstream.headers.get("content-range");
+  if (cr) out.set("content-range", cr);
+  out.set("accept-ranges", upstream.headers.get("accept-ranges") || "bytes");
+  out.set("cache-control", "public, max-age=300");
+  out.set("x-cache-source", source);
+  return new Response(upstream.body, { status: upstream.status, headers: out });
+}
+function withDisposition(resp, download, platform, id, kind, ext) {
+  if (!download) return resp;
+  const headers2 = new Headers(resp.headers);
+  const e = ext || (kind === "cover" || kind.startsWith("image") ? "jpeg" : "mp4");
+  headers2.set("content-disposition", `attachment; filename="${platform}_${id}_${kind}.${e}"`);
+  return new Response(resp.body, { status: resp.status, headers: headers2 });
 }
 
 // src/service/docs.js
@@ -1660,10 +1975,20 @@ var DOCS_HTML = `<!doctype html>
 <div class=route><span class=m>GET</span><span class=lock>\u{1F512}</span> <code>/fetch_one_video?aweme_id=</code></div>
 
 <h2>Hybrid <small>/api/hybrid</small></h2>
-<div class=route><span class=m>GET</span><span class=lock>\u{1F512}</span> <code>/video_data?url=&minimal=false</code> <small>\u81EA\u52A8\u8BC6\u522B douyin/tiktok</small></div>
+<div class=route><span class=m>GET</span><span class=lock>\u{1F512}</span> <code>/video_data?url=&minimal=false&refresh=0&proxy=0</code> <small>\u81EA\u52A8\u8BC6\u522B douyin/tiktok</small></div>
+<small>minimal=true \u8FD4\u56DE\u7EDF\u4E00\u7CBE\u7B80\u7ED3\u6784\uFF1Bproxy=1\uFF08\u9700 minimal=true\uFF09\u628A\u5A92\u4F53\u76F4\u94FE\u6539\u5199\u6210\u4E0B\u9762\u7684 /proxy \u7F13\u5B58\u94FE\u63A5\uFF1Brefresh=1 \u8DF3\u8FC7\u5143\u6570\u636E\u7F13\u5B58\u5F3A\u5237\u3002</small>
 
 <h2>Download</h2>
 <div class=route><span class=m>GET</span><span class=lock>\u{1F512}</span> <code>/download?url=&with_watermark=false</code> <small>\u76F4\u63A5 stream \u89C6\u9891/\u56FE\u7247</small></div>
+
+<h2>\u53CD\u4EE3 + R2 \u7F13\u5B58 <small>/proxy</small></h2>
+<div class=route><span class=m>GET</span><span class=lock>\u{1F512}</span> <code>/proxy?platform=douyin|tiktok&id=&kind=nwm&download=0&refresh=0</code></div>
+<small>
+\u6309 ID \u7A33\u5B9A\u7F13\u5B58\u7684\u5A92\u4F53\u53CD\u4EE3\uFF1Aworker \u7528\u6B63\u786E\u7684 Referer \u62C9\u53D6 CDN \u5B57\u8282\u5E76\u5B58\u5165 R2\uFF08key = <code>media/{platform}/{id}/{kind}</code>\uFF09\uFF0C\u7B7E\u540D url \u8FC7\u671F\u4E5F\u7167\u6837\u547D\u4E2D\uFF1B\u652F\u6301 Range\uFF08\u89C6\u9891\u62D6\u52A8\uFF09\u3002<br>
+kind: <code>nwm</code>\uFF08\u65E0\u6C34\u5370\u89C6\u9891 HQ\uFF09\xB7 <code>wm</code>\uFF08\u6709\u6C34\u5370\u89C6\u9891\uFF09\xB7 <code>cover</code>\uFF08\u5C01\u9762\uFF09\xB7 <code>image0/1/\u2026</code>\uFF08\u65E0\u6C34\u5370\u56FE\uFF09\xB7 <code>imagewm0/1/\u2026</code>\uFF08\u6709\u6C34\u5370\u56FE\uFF09\u3002<br>
+\u9274\u6743\u7B7E\u540D\u4E32\u4E3A <code>"proxy{platform}{id}"</code>\uFF08\u4E0E kind \u65E0\u5173\uFF0C\u4E00\u4E2A auth \u8986\u76D6\u8BE5\u4F5C\u54C1\u6240\u6709 kind\uFF09\u3002video_data?proxy=1 \u91CD\u5199\u51FA\u7684\u94FE\u63A5\u5DF2\u81EA\u5E26 <code>&auth=</code>\uFF0C\u53EF\u76F4\u63A5\u5F53\u64AD\u653E\u5668 src\u3002<br>
+\u5143\u6570\u636E\uFF08\u89E3\u6790\u540E\u7684\u89C6\u9891\u4FE1\u606F\uFF09\u4EE5 JSON \u6587\u4EF6\u7F13\u5B58\u5728 R2 <code>meta/{platform}/{id}.json</code>\uFF0C\u9ED8\u8BA4 1 \u5C0F\u65F6\uFF08env <code>META_CACHE_TTL</code> \u53EF\u8C03\uFF0C<code>?refresh=1</code> \u5F3A\u5237\uFF09\u3002\u9700\u8981\u7ED1\u5B9A R2\uFF1Aenv <code>DOUYIN_R2</code>\uFF08\u672A\u7ED1\u5B9A\u5219\u5168\u90E8\u9000\u5316\u4E3A\u4E0D\u7F13\u5B58\u3001\u5B9E\u65F6\u76F4\u8FDE\uFF09\u3002
+</small>
 
 </body></html>`;
 
@@ -1694,11 +2019,18 @@ async function router(request, ctx) {
   if (pathname === "/download") {
     return downloadService(request, ctx);
   }
+  if (pathname === "/proxy") {
+    return proxyService(request, ctx);
+  }
   throw new HTTPException(404, { message: `No route for ${pathname}` });
 }
 
 // src/config.js
 var DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36";
+var toNumber = (value, fallback) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) ? fallback : parsed;
+};
 function buildConfig(env) {
   env = env || {};
   return {
@@ -1720,6 +2052,17 @@ function buildConfig(env) {
     tiktok: {
       cookie: env.TIKTOK_COOKIE || "",
       userAgent: env.TIKTOK_USER_AGENT || env.DEFAULT_USER_AGENT || DEFAULT_UA
+    },
+    // R2 bucket binding for caching media bytes + metadata JSON. When
+    // bound, /proxy serves video/image bytes from R2 (content keyed by
+    // platform/id/kind, so signed-CDN-url rotation still hits cache),
+    // and parsed video metadata is cached as JSON files under meta/.
+    // Absent (null) → everything still works, just uncached.
+    mediaR2: env.DOUYIN_R2 || env.MEDIA_R2 || null,
+    cache: {
+      // Metadata JSON freshness in seconds (default 1h). ?refresh=1
+      // on a request bypasses + repopulates.
+      metaTtl: toNumber(env.META_CACHE_TTL, 3600)
     },
     log: {
       level: env.LOG_LEVEL || "info"
