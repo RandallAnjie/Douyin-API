@@ -13,6 +13,7 @@ import douyinWebService from './service/douyin.js'
 import { tiktokWebService, tiktokAppService } from './service/tiktok.js'
 import { hybridService, downloadService } from './service/hybrid.js'
 import { proxyService } from './service/proxy.js'
+import appService from './service/app.js'
 import docsService from './service/docs.js'
 import { HTTPException } from './utils/http-exception.js'
 
@@ -27,6 +28,9 @@ export async function router (request, ctx) {
   if (pathname === '') pathname = '/'
 
   if (pathname === '/' && request.method === 'GET') {
+    return appService(request, ctx)
+  }
+  if (pathname === '/docs' && request.method === 'GET') {
     return docsService(request, ctx)
   }
 

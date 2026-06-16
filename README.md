@@ -65,7 +65,9 @@ node -e 'console.log(require("crypto").createHmac("sha1","SECRET").update("douyi
 
 ## Endpoints
 
-Open `/` (the worker root) for a full, live route index. Summary:
+`/` serves **解析台** — a paste-to-parse web UI (enter your token once,
+paste a Douyin/TikTok share command, get the no-watermark download).
+`/docs` is the full live route index. Summary:
 
 - `GET /api/douyin/web/{fetch_one_video,fetch_user_post_videos,fetch_user_like_videos,fetch_user_mix_videos,handler_user_profile,fetch_video_comments,fetch_video_comment_replies,fetch_user_live_videos,fetch_user_live_videos_by_room_id,fetch_live_gift_ranking}` 🔒
 - `GET /api/douyin/web/{generate_real_msToken,generate_ttwid,generate_verify_fp,generate_s_v_web_id,generate_x_bogus,generate_a_bogus,get_aweme_id,get_sec_user_id,get_webcast_id}` + `POST get_all_*`
