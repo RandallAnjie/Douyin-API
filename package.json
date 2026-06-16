@@ -1,0 +1,21 @@
+{
+  "name": "douyin-tiktok-api",
+  "version": "1.0.0",
+  "description": "Douyin / TikTok data API as a RandallFlare (Cloudflare workerd) worker. Port of Evil0ctal/Douyin_TikTok_Download_API — API-only, cookies in env, meting-style HMAC auth.",
+  "main": "src/worker.js",
+  "type": "module",
+  "license": "Apache-2.0",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs",
+    "lint": "oxlint .",
+    "test": "node test/parity.mjs",
+    "test:e2e": "node test/e2e.mjs"
+  },
+  "dependencies": {
+    "esbuild": "^0.24.0"
+  },
+  "devDependencies": {
+    "oxlint": "^1.2.0"
+  }
+}
