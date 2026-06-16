@@ -8,10 +8,10 @@
 //      `import x from "crypto"` is rewritten to `node:crypto` because
 //      workerd only registers the node:*-prefixed module names.
 //
-// We don't use createCipheriv anywhere (RC4 is hand-rolled, hashing
-// goes through node:crypto.createHash / createHmac), so the
-// null-IV crypto shim the sibling Meting-API worker needs isn't
-// required here.
+// All crypto is pure-JS (src/lib: sm3 / md5 / sha1+hmac, RC4 hand-
+// rolled), so the bundle has ZERO node:* imports — the worker boots
+// on workerd without the nodejs_compat flag. The builtin alias/external
+// lists below are kept only as a safety net for future deps.
 
 import { build } from 'esbuild'
 

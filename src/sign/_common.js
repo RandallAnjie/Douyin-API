@@ -1,7 +1,10 @@
 // Shared byte primitives for the X-Bogus / a_bogus ports. All work on
 // plain arrays of byte ints (0-255) to mirror the Python source's
 // list-of-ints style and avoid Buffer/TypedArray edge cases.
-import { createHash } from 'node:crypto'
+//
+// Hashing is pure-JS (src/lib/*) so the worker needs no node:crypto /
+// nodejs_compat flag.
+import { md5HexOfBytes as _md5 } from '../lib/md5.js'
 
 // String -> byte array, latin1 (ISO-8859-1): one byte per char, char
 // codes assumed <= 0xFF (true for UA / url / RC4 output).
@@ -47,8 +50,7 @@ export function rc4 (key, data) {
 }
 
 // md5 hex digest of a byte-int array.
-export const md5HexOfBytes = (bytes) =>
-  createHash('md5').update(Uint8Array.from(bytes.map(b => b & 0xFF))).digest('hex')
+export const md5HexOfBytes = (bytes) => _md5(bytes)
 
 // base64 (standard) of a byte-int array.
 export const base64OfBytes = (bytes) => {

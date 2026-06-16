@@ -4,11 +4,10 @@
 //     string "{platform}{route}{primaryId}".
 //
 // Mirrors Meting-API/src/service/api.js: HMAC-SHA1(secret, message).
-import { createHmac } from 'node:crypto'
+import { hmacSha1Hex } from '../lib/sha1.js'
 import { HTTPException } from './http-exception.js'
 
-export const sign = (message, secret) =>
-  createHmac('sha1', secret).update(message).digest('hex')
+export const sign = (message, secret) => hmacSha1Hex(secret, message)
 
 export const canonical = (platform, route, primaryId = '') =>
   `${platform}${route}${primaryId}`

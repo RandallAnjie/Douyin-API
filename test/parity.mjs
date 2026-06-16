@@ -1,7 +1,10 @@
 // Signature parity tests. Reference values were captured from the
 // upstream Python implementation (Evil0ctal/Douyin_TikTok_Download_API)
 // with time/random pinned. Run: `node test/parity.mjs`.
+import { createHmac } from 'node:crypto'
 import { sm3Hash } from '../src/lib/sm3.js'
+import { md5HexOfBytes } from '../src/lib/md5.js'
+import { sha1Hex, hmacSha1Hex } from '../src/lib/sha1.js'
 import { getXBogus } from '../src/sign/xbogus.js'
 import { getABogus } from '../src/sign/abogus.js'
 
@@ -19,6 +22,17 @@ check('sm3("abc")', sm3Hash(enc('abc')),
   '66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0')
 check('sm3("abcd"*16)', sm3Hash(enc('abcd'.repeat(16))),
   'debe9ff92275b8a138604889c18e5a4d6fdb70e5387e5765293dcba39c0c5732')
+
+// 1b) MD5 / SHA1 / HMAC-SHA1 (pure-JS, replacing node:crypto).
+check('md5("")', md5HexOfBytes(enc('')), 'd41d8cd98f00b204e9800998ecf8427e')
+check('md5("abc")', md5HexOfBytes(enc('abc')), '900150983cd24fb0d6963f7d28e17f72')
+check('sha1("abc")', sha1Hex(enc('abc')), 'a9993e364706816aba3e25717850c26c9cd0d89d')
+check('hmac-sha1 vector', hmacSha1Hex('key', 'The quick brown fox jumps over the lazy dog'),
+  'de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9')
+// Cross-check our HMAC against node:crypto so existing signed links and
+// external clients computing HMAC-SHA1 still verify identically.
+check('hmac-sha1 == node:crypto', hmacSha1Hex('secret123', 'douyinfetch_one_video7372484719365098803'),
+  createHmac('sha1', 'secret123').update('douyinfetch_one_video7372484719365098803').digest('hex'))
 
 // 2) X-Bogus — fixed UA + timer=1700000000.
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36'

@@ -33,7 +33,9 @@ src/router.js     path -> service (prefix-aware)
 src/config.js     env -> config (token, cookies, UA)
 src/middleware/   logger + error handler (JSON envelope, x-error-message)
 src/sign/         abogus.js (a_bogus), xbogus.js (X-Bogus), _common.js (rc4/md5/base64)
-src/lib/sm3.js    pure-JS SM3 (a_bogus needs it; not in node:crypto)
+src/lib/          pure-JS crypto: sm3.js (a_bogus), md5.js (X-Bogus),
+                  sha1.js (sha1 + hmacSha1 for auth) — NO node:crypto,
+                  so the worker boots without the nodejs_compat flag
 src/utils/        auth, params (urlencode/rawJoin + default param sets),
                   base-crawler (fetch wrapper), ids (redirect resolution),
                   tokens (ttwid/msToken/verify_fp), http-exception, respond

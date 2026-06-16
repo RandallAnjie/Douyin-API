@@ -154,9 +154,85 @@ function jsonResponse(data, { status = 200, headers: headers2 = {}, router: rout
   });
 }
 
+// src/lib/sha1.js
+var rol = (n, c) => (n << c | n >>> 32 - c) >>> 0;
+function sha1Bytes(input) {
+  const bytes = Array.from(input, (b) => b & 255);
+  const ml = bytes.length * 8;
+  bytes.push(128);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  const hi = Math.floor(ml / 4294967296);
+  const lo = ml >>> 0;
+  for (let i = 3; i >= 0; i--) bytes.push(hi >>> i * 8 & 255);
+  for (let i = 3; i >= 0; i--) bytes.push(lo >>> i * 8 & 255);
+  let h0 = 1732584193;
+  let h1 = 4023233417;
+  let h2 = 2562383102;
+  let h3 = 271733878;
+  let h4 = 3285377520;
+  const w = new Array(80);
+  for (let off = 0; off < bytes.length; off += 64) {
+    for (let i = 0; i < 16; i++) {
+      const j = off + i * 4;
+      w[i] = (bytes[j] << 24 | bytes[j + 1] << 16 | bytes[j + 2] << 8 | bytes[j + 3]) >>> 0;
+    }
+    for (let i = 16; i < 80; i++) {
+      w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    }
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+    for (let i = 0; i < 80; i++) {
+      let f, k;
+      if (i < 20) {
+        f = b & c | ~b & d;
+        k = 1518500249;
+      } else if (i < 40) {
+        f = b ^ c ^ d;
+        k = 1859775393;
+      } else if (i < 60) {
+        f = b & c | b & d | c & d;
+        k = 2400959708;
+      } else {
+        f = b ^ c ^ d;
+        k = 3395469782;
+      }
+      const t = rol(a, 5) + f + e + k + w[i] >>> 0;
+      e = d;
+      d = c;
+      c = rol(b, 30);
+      b = a;
+      a = t;
+    }
+    h0 = h0 + a >>> 0;
+    h1 = h1 + b >>> 0;
+    h2 = h2 + c >>> 0;
+    h3 = h3 + d >>> 0;
+    h4 = h4 + e >>> 0;
+  }
+  const out = [];
+  for (const h of [h0, h1, h2, h3, h4]) {
+    out.push(h >>> 24 & 255, h >>> 16 & 255, h >>> 8 & 255, h & 255);
+  }
+  return out;
+}
+var toHex = (bytes) => bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
+function hmacSha1Hex(secret, message) {
+  const enc = new TextEncoder();
+  let key = Array.from(enc.encode(secret));
+  if (key.length > 64) key = sha1Bytes(key);
+  while (key.length < 64) key.push(0);
+  const ipad = key.map((b) => b ^ 54);
+  const opad = key.map((b) => b ^ 92);
+  const msg = Array.from(enc.encode(message));
+  const inner = sha1Bytes(ipad.concat(msg));
+  return toHex(sha1Bytes(opad.concat(inner)));
+}
+
 // src/utils/auth.js
-import { createHmac } from "node:crypto";
-var sign = (message, secret) => createHmac("sha1", secret).update(message).digest("hex");
+var sign = (message, secret) => hmacSha1Hex(secret, message);
 var canonical = (platform, route, primaryId = "") => `${platform}${route}${primaryId}`;
 function requireAuth(request, ctx, platform, route, primaryId = "") {
   const url = new URL(request.url);
@@ -237,8 +313,128 @@ function sm3Hash(msg) {
   return v.map(toHex32).join("");
 }
 
+// src/lib/md5.js
+var add32 = (a, b) => a + b & 4294967295;
+var rol2 = (n, c) => n << c | n >>> 32 - c;
+function cmn(q3, a, b, x, s, t) {
+  a = add32(add32(a, q3), add32(x, t));
+  return add32(rol2(a, s), b);
+}
+var ff2 = (a, b, c, d, x, s, t) => cmn(b & c | ~b & d, a, b, x, s, t);
+var gg2 = (a, b, c, d, x, s, t) => cmn(b & d | c & ~d, a, b, x, s, t);
+var hh = (a, b, c, d, x, s, t) => cmn(b ^ c ^ d, a, b, x, s, t);
+var ii = (a, b, c, d, x, s, t) => cmn(c ^ (b | ~d), a, b, x, s, t);
+function cycle(state, blk) {
+  let [a, b, c, d] = state;
+  a = ff2(a, b, c, d, blk[0], 7, -680876936);
+  d = ff2(d, a, b, c, blk[1], 12, -389564586);
+  c = ff2(c, d, a, b, blk[2], 17, 606105819);
+  b = ff2(b, c, d, a, blk[3], 22, -1044525330);
+  a = ff2(a, b, c, d, blk[4], 7, -176418897);
+  d = ff2(d, a, b, c, blk[5], 12, 1200080426);
+  c = ff2(c, d, a, b, blk[6], 17, -1473231341);
+  b = ff2(b, c, d, a, blk[7], 22, -45705983);
+  a = ff2(a, b, c, d, blk[8], 7, 1770035416);
+  d = ff2(d, a, b, c, blk[9], 12, -1958414417);
+  c = ff2(c, d, a, b, blk[10], 17, -42063);
+  b = ff2(b, c, d, a, blk[11], 22, -1990404162);
+  a = ff2(a, b, c, d, blk[12], 7, 1804603682);
+  d = ff2(d, a, b, c, blk[13], 12, -40341101);
+  c = ff2(c, d, a, b, blk[14], 17, -1502002290);
+  b = ff2(b, c, d, a, blk[15], 22, 1236535329);
+  a = gg2(a, b, c, d, blk[1], 5, -165796510);
+  d = gg2(d, a, b, c, blk[6], 9, -1069501632);
+  c = gg2(c, d, a, b, blk[11], 14, 643717713);
+  b = gg2(b, c, d, a, blk[0], 20, -373897302);
+  a = gg2(a, b, c, d, blk[5], 5, -701558691);
+  d = gg2(d, a, b, c, blk[10], 9, 38016083);
+  c = gg2(c, d, a, b, blk[15], 14, -660478335);
+  b = gg2(b, c, d, a, blk[4], 20, -405537848);
+  a = gg2(a, b, c, d, blk[9], 5, 568446438);
+  d = gg2(d, a, b, c, blk[14], 9, -1019803690);
+  c = gg2(c, d, a, b, blk[3], 14, -187363961);
+  b = gg2(b, c, d, a, blk[8], 20, 1163531501);
+  a = gg2(a, b, c, d, blk[13], 5, -1444681467);
+  d = gg2(d, a, b, c, blk[2], 9, -51403784);
+  c = gg2(c, d, a, b, blk[7], 14, 1735328473);
+  b = gg2(b, c, d, a, blk[12], 20, -1926607734);
+  a = hh(a, b, c, d, blk[5], 4, -378558);
+  d = hh(d, a, b, c, blk[8], 11, -2022574463);
+  c = hh(c, d, a, b, blk[11], 16, 1839030562);
+  b = hh(b, c, d, a, blk[14], 23, -35309556);
+  a = hh(a, b, c, d, blk[1], 4, -1530992060);
+  d = hh(d, a, b, c, blk[4], 11, 1272893353);
+  c = hh(c, d, a, b, blk[7], 16, -155497632);
+  b = hh(b, c, d, a, blk[10], 23, -1094730640);
+  a = hh(a, b, c, d, blk[13], 4, 681279174);
+  d = hh(d, a, b, c, blk[0], 11, -358537222);
+  c = hh(c, d, a, b, blk[3], 16, -722521979);
+  b = hh(b, c, d, a, blk[6], 23, 76029189);
+  a = hh(a, b, c, d, blk[9], 4, -640364487);
+  d = hh(d, a, b, c, blk[12], 11, -421815835);
+  c = hh(c, d, a, b, blk[15], 16, 530742520);
+  b = hh(b, c, d, a, blk[2], 23, -995338651);
+  a = ii(a, b, c, d, blk[0], 6, -198630844);
+  d = ii(d, a, b, c, blk[7], 10, 1126891415);
+  c = ii(c, d, a, b, blk[14], 15, -1416354905);
+  b = ii(b, c, d, a, blk[5], 21, -57434055);
+  a = ii(a, b, c, d, blk[12], 6, 1700485571);
+  d = ii(d, a, b, c, blk[3], 10, -1894986606);
+  c = ii(c, d, a, b, blk[10], 15, -1051523);
+  b = ii(b, c, d, a, blk[1], 21, -2054922799);
+  a = ii(a, b, c, d, blk[8], 6, 1873313359);
+  d = ii(d, a, b, c, blk[15], 10, -30611744);
+  c = ii(c, d, a, b, blk[6], 15, -1560198380);
+  b = ii(b, c, d, a, blk[13], 21, 1309151649);
+  a = ii(a, b, c, d, blk[4], 6, -145523070);
+  d = ii(d, a, b, c, blk[11], 10, -1120210379);
+  c = ii(c, d, a, b, blk[2], 15, 718787259);
+  b = ii(b, c, d, a, blk[9], 21, -343485551);
+  state[0] = add32(a, state[0]);
+  state[1] = add32(b, state[1]);
+  state[2] = add32(c, state[2]);
+  state[3] = add32(d, state[3]);
+}
+function bytesToWords(bytes, start) {
+  const w = new Array(16);
+  for (let i = 0; i < 16; i++) {
+    const j = start + i * 4;
+    w[i] = bytes[j] | bytes[j + 1] << 8 | bytes[j + 2] << 16 | bytes[j + 3] << 24;
+  }
+  return w;
+}
+var toHexLE = (n) => {
+  let s = "";
+  for (let i = 0; i < 4; i++) {
+    s += (n >>> i * 8 & 255).toString(16).padStart(2, "0");
+  }
+  return s;
+};
+function md5HexOfBytes(input) {
+  const bytes = Array.from(input, (b) => b & 255);
+  const len = bytes.length;
+  const state = [1732584193, -271733879, -1732584194, 271733878];
+  let i;
+  for (i = 0; i + 64 <= len; i += 64) {
+    cycle(state, bytesToWords(bytes, i));
+  }
+  const tail = bytes.slice(i);
+  tail.push(128);
+  if (tail.length > 56) {
+    while (tail.length < 64) tail.push(0);
+    cycle(state, bytesToWords(tail, 0));
+    tail.length = 0;
+  }
+  while (tail.length < 56) tail.push(0);
+  const bitLen = len * 8;
+  for (let k = 0; k < 4; k++) tail.push(bitLen >>> k * 8 & 255);
+  const high = Math.floor(len / 536870912);
+  for (let k = 0; k < 4; k++) tail.push(high >>> k * 8 & 255);
+  cycle(state, bytesToWords(tail, 0));
+  return toHexLE(state[0]) + toHexLE(state[1]) + toHexLE(state[2]) + toHexLE(state[3]);
+}
+
 // src/sign/_common.js
-import { createHash } from "node:crypto";
 var strToBytes = (s) => {
   const out = new Array(s.length);
   for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 255;
@@ -272,7 +468,7 @@ function rc4(key, data) {
   }
   return out;
 }
-var md5HexOfBytes = (bytes) => createHash("md5").update(Uint8Array.from(bytes.map((b) => b & 255))).digest("hex");
+var md5HexOfBytes2 = (bytes) => md5HexOfBytes(bytes);
 
 // src/sign/abogus.js
 var UA_CODE = [
@@ -467,7 +663,7 @@ function md5(input) {
   let arr;
   if (typeof input === "string") arr = md5StrToArray(input);
   else arr = input;
-  return md5HexOfBytes(arr);
+  return md5HexOfBytes2(arr);
 }
 var md5Encrypt = (urlPath) => md5StrToArray(md5(md5StrToArray(md5(urlPath))));
 function encodingConversion(a, b, c, e, d, t, f, r, n, o, i, _, x, u, s, l, v, h, p) {
