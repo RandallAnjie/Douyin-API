@@ -153,12 +153,6 @@ function jsonResponse(data, { status = 200, headers: headers2 = {}, router: rout
     headers: { "content-type": "application/json; charset=utf-8", ...headers2 }
   });
 }
-function rawJsonResponse(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8" }
-  });
-}
 
 // src/lib/sha1.js
 var rol = (n, c) => (n << c | n >>> 32 - c) >>> 0;
@@ -2145,82 +2139,6 @@ function withDisposition(resp, download, platform, id, kind, ext) {
   return new Response(resp.body, { status: resp.status, headers: headers2 });
 }
 
-// src/service/debug.js
-async function cacheDebugService(request, ctx) {
-  const url = new URL(request.url);
-  if ((url.searchParams.get("token") || "") !== ctx.config.auth.token) {
-    throw new HTTPException(401, { message: "token required" });
-  }
-  const bucket = ctx.config.mediaR2;
-  const r = { waitUntil: typeof ctx.waitUntil, bucketBound: !!bucket };
-  if (!bucket) return rawJsonResponse(r);
-  const readKey = url.searchParams.get("key");
-  if (readKey) {
-    r.key = readKey;
-    try {
-      const h = await bucket.head(readKey);
-      r.headFound = !!h;
-      r.headUploaded = h?.uploaded ? String(h.uploaded) : null;
-    } catch (e) {
-      r.headErr = String(e?.message || e);
-    }
-    try {
-      const o = await bucket.get(readKey);
-      r.getFound = !!o;
-      if (o) {
-        r.getUploaded = o.uploaded ? String(o.uploaded) : null;
-        r.ageSec = o.uploaded ? Math.round((Date.now() - new Date(o.uploaded).getTime()) / 1e3) : null;
-        try {
-          r.bodyLen = (await new Response(o.body).text()).length;
-        } catch (e) {
-          r.bodyErr = String(e?.message || e);
-        }
-      }
-    } catch (e) {
-      r.getErr = String(e?.message || e);
-    }
-    return rawJsonResponse(r);
-  }
-  const key = "meta/_debug.json";
-  const payload = JSON.stringify({ t: Date.now(), hello: "world" });
-  try {
-    await bucket.put(key, new Response(payload).body, { httpMetadata: { contentType: "application/json" } });
-    r.streamPut = "ok";
-  } catch (e) {
-    r.streamPut = String(e?.message || e);
-  }
-  try {
-    const head = await bucket.head(key);
-    r.headFound = !!head;
-    r.headSize = head?.size;
-  } catch (e) {
-    r.headErr = String(e?.message || e);
-  }
-  try {
-    const obj = await bucket.get(key);
-    r.getFound = !!obj;
-    if (obj) {
-      r.getUploaded = obj.uploaded ? String(obj.uploaded) : null;
-      try {
-        r.bodyText = obj.body ? await new Response(obj.body).text() : "(no body)";
-      } catch (e) {
-        r.bodyErr = String(e?.message || e);
-      }
-    }
-  } catch (e) {
-    r.getErr = String(e?.message || e);
-  }
-  try {
-    if (typeof bucket.list === "function") {
-      const l = await bucket.list({ prefix: "meta/", limit: 5 });
-      r.listKeys = (l?.objects || []).map((o) => o.key);
-    } else r.list = "no fn";
-  } catch (e) {
-    r.listErr = String(e?.message || e);
-  }
-  return rawJsonResponse(r);
-}
-
 // src/service/app.js
 async function appService(request, ctx) {
   return new Response(PAGE, {
@@ -2561,9 +2479,6 @@ async function router(request, ctx) {
   }
   if (pathname === "/proxy") {
     return proxyService(request, ctx);
-  }
-  if (pathname === "/__cachedebug") {
-    return cacheDebugService(request, ctx);
   }
   throw new HTTPException(404, { message: `No route for ${pathname}` });
 }
