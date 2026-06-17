@@ -2402,11 +2402,11 @@ footer a{color:var(--muted)}
   <p class=eyebrow>DOUYIN \xB7 TIKTOK \u6863\u6848</p>
   <h1>\u8FD1\u671F\u89E3\u7801</h1>
   <div class=bar>
-    <input id=key type=password autocomplete=off placeholder="\u8BBF\u95EE\u94A5\u5319 (API Token)">
+    <input id=key type=password autocomplete=off placeholder="\u8BBF\u95EE\u5BC6\u94A5 (API Token)">
     <button id=refresh>\u5237\u65B0</button>
     <a href="/">\u2190 \u89E3\u6790\u53F0</a>
   </div>
-  <p id=status class=status>\u8F93\u5165\u94A5\u5319\u540E\u81EA\u52A8\u52A0\u8F7D</p>
+  <p id=status class=status>\u8F93\u5165\u5BC6\u94A5\u540E\u81EA\u52A8\u52A0\u8F7D</p>
   <div id=grid class=grid></div>
   <div id=pager class=pager></div>
   <footer>\u81EA\u6258\u7BA1\u4E8E RandallFlare \xB7 \u6BCF\u9875 10 \u6761 \xB7 \u91CD\u590D\u89E3\u6790\u5408\u5E76\u8BA1\u6B21</footer>
@@ -2422,7 +2422,7 @@ footer a{color:var(--muted)}
   async function load(page){
     page=page||1
     var key=(keyInput.value||'').trim()
-    if(!key){statusEl.textContent='\u5148\u586B\u8BBF\u95EE\u94A5\u5319';return}
+    if(!key){statusEl.textContent='\u5148\u586B\u8BBF\u95EE\u5BC6\u94A5';return}
     try{localStorage.setItem(KEY,key)}catch(e){}
     statusEl.textContent='\u52A0\u8F7D\u4E2D\u2026';grid.innerHTML='';pager.innerHTML=''
     try{
@@ -2509,7 +2509,6 @@ h1{font-family:var(--serif);font-weight:600;font-size:clamp(40px,11vw,76px);line
 .keylink{background:transparent;border:0;color:var(--faint);font-family:var(--mono);font-size:11px;letter-spacing:.22em;cursor:pointer;padding:4px 2px}
 .keylink:hover{color:var(--teal)}
 .keywrap{margin:10px 0 0}
-.keywrap.hidden{display:none}
 .keywrap input{width:100%;background:var(--panel);border:1px solid var(--line);color:var(--ink);font-family:var(--mono);font-size:13px;padding:11px 13px;border-radius:9px;letter-spacing:.04em}
 input:focus-visible,textarea:focus-visible{outline:2px solid var(--teal);outline-offset:1px;border-color:transparent}
 
@@ -2581,10 +2580,10 @@ footer a{color:var(--muted)}
   <p class=sub>\u7C98\u8D34\u6296\u97F3 / TikTok \u5206\u4EAB\u53E3\u4EE4\uFF0C\u81EA\u52A8\u53D6\u56DE\u65E0\u6C34\u5370\u89C6\u9891\u4E0E\u56FE\u96C6\u3002</p>
 
   <div class=keyrow>
-    <button id=keytoggle type=button class=keylink>\u94A5\u5319</button>
+    <button id=keytoggle type=button class=keylink>\u5BC6\u94A5</button>
   </div>
   <div id=keywrap class=keywrap hidden>
-    <input id=key type=password autocomplete=off spellcheck=false placeholder="\u8BBF\u95EE\u94A5\u5319">
+    <input id=key type=password autocomplete=off spellcheck=false placeholder="\u8BBF\u95EE\u5BC6\u94A5">
   </div>
 
   <div class=slot>
@@ -2604,9 +2603,9 @@ footer a{color:var(--muted)}
   var KEY='dt_key'
   var keyInput=$('#key'),pasteBox=$('#paste'),statusEl=$('#status'),out=$('#out'),goBtn=$('#go')
   var keytoggle=$('#keytoggle'),keywrap=$('#keywrap')
-  try{var k=localStorage.getItem(KEY);if(k){keyInput.value=k;keywrap.classList.remove('hidden')}}catch(e){}
+  try{var k=localStorage.getItem(KEY);if(k){keyInput.value=k;keywrap.hidden=false}}catch(e){}
   keyInput.addEventListener('input',function(){try{localStorage.setItem(KEY,keyInput.value)}catch(e){}})
-  keytoggle.addEventListener('click',function(){keywrap.classList.toggle('hidden');if(!keywrap.classList.contains('hidden'))keyInput.focus()})
+  keytoggle.addEventListener('click',function(){keywrap.hidden=!keywrap.hidden;if(!keywrap.hidden)keyInput.focus()})
 
   function extractUrl(t){var m=String(t||'').match(/https?:\\/\\/[^\\s]+/);return m?m[0]:''}
   function setStatus(s,kind){statusEl.textContent=s;statusEl.className='status'+(kind?' '+kind:'')}
@@ -2628,7 +2627,7 @@ footer a{color:var(--muted)}
       var r=await fetch(api)
       var j=await r.json()
       if(my!==inflight)return
-      if(r.status===429){setStatus((j&&j.message)||'\u6E38\u5BA2\u6B21\u6570\u5DF2\u8FBE\u4E0A\u9650\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5\u6216\u586B\u5165\u8BBF\u95EE\u94A5\u5319','warn');return}
+      if(r.status===429){setStatus((j&&j.message)||'\u6E38\u5BA2\u6B21\u6570\u5DF2\u8FBE\u4E0A\u9650\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5\u6216\u586B\u5165\u8BBF\u95EE\u5BC6\u94A5','warn');return}
       if(r.status!==200){setStatus('\u5931\u8D25\uFF1A'+((j&&j.message)||('HTTP '+r.status)),'err');return}
       render(j.data)
       setStatus((key?'\u5DF2\u89E3\u7801':'\u5DF2\u89E3\u7801\uFF08\u6E38\u5BA2 \xB7 \u94FE\u63A5\u4E34\u65F6\u6709\u6548\uFF09')+' \xB7 '+(j.data&&j.data.platform||''),'ok')

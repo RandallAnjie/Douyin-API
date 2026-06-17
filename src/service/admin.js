@@ -72,11 +72,11 @@ footer a{color:var(--muted)}
   <p class=eyebrow>DOUYIN · TIKTOK 档案</p>
   <h1>近期解码</h1>
   <div class=bar>
-    <input id=key type=password autocomplete=off placeholder="访问钥匙 (API Token)">
+    <input id=key type=password autocomplete=off placeholder="访问密钥 (API Token)">
     <button id=refresh>刷新</button>
     <a href="/">← 解析台</a>
   </div>
-  <p id=status class=status>输入钥匙后自动加载</p>
+  <p id=status class=status>输入密钥后自动加载</p>
   <div id=grid class=grid></div>
   <div id=pager class=pager></div>
   <footer>自托管于 RandallFlare · 每页 10 条 · 重复解析合并计次</footer>
@@ -92,7 +92,7 @@ footer a{color:var(--muted)}
   async function load(page){
     page=page||1
     var key=(keyInput.value||'').trim()
-    if(!key){statusEl.textContent='先填访问钥匙';return}
+    if(!key){statusEl.textContent='先填访问密钥';return}
     try{localStorage.setItem(KEY,key)}catch(e){}
     statusEl.textContent='加载中…';grid.innerHTML='';pager.innerHTML=''
     try{
