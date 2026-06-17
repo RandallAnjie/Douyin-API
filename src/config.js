@@ -48,6 +48,10 @@ export function buildConfig (env) {
     // D1 database binding for the query log (recent parses shown in
     // /admin). Absent (null) → logging + admin degrade to no-ops.
     d1: env.DOUYIN_D1 || env.DB || null,
+    // KV namespace binding for guest rate limiting (preferred over D1
+    // for counters: TTL auto-expires the window, no table growth).
+    // Absent → rate limiting falls back to D1.
+    kv: env.DOUYIN_KV || env.KV || null,
     cache: {
       // Metadata JSON freshness in seconds (default 1h). ?refresh=1
       // on a request bypasses + repopulates.

@@ -71,13 +71,38 @@ export async function recentQueries (ctx, limit = 10, offset = 0) {
   }
 }
 
-// Per-IP fixed-window rate limit, backed by D1. Returns { allowed,
-// count, limit, resetSec }. When no D1 is bound we cannot enforce a
-// limit, so guests are refused ({ allowed:false, reason:'no-store' }).
-let rateSchemaReady = false
+// Per-IP fixed-window rate limit. Prefers KV (TTL-expiring counters),
+// falls back to D1. Returns { allowed, count, limit, resetSec }. With
+// neither store bound we can't enforce a limit, so guests are refused
+// ({ allowed:false, reason:'no-store' }).
 export async function rateLimitHit (ctx, ip, limit, windowSec) {
-  const db = ctx.config.d1
-  if (!db) return { allowed: false, reason: 'no-store' }
+  if (ctx.config.kv) return rateLimitKV(ctx.config.kv, ip, limit, windowSec)
+  if (ctx.config.d1) return rateLimitD1(ctx.config.d1, ip, limit, windowSec)
+  return { allowed: false, reason: 'no-store' }
+}
+
+// KV counter. get→+1→put is not atomic (a burst can slip a few over the
+// limit), which is fine for soft guest limiting. The window key expires
+// via expirationTtl, so there's nothing to clean up.
+async function rateLimitKV (kv, ip, limit, windowSec) {
+  try {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const bucket = Math.floor(nowSec / windowSec)
+    const key = `rl:${ip}:${bucket}`
+    let n = 0
+    try { const v = await kv.get(key); if (v) n = parseInt(v, 10) || 0 } catch {}
+    n += 1
+    await kv.put(key, String(n), { expirationTtl: Math.max(60, windowSec) })
+    return { allowed: n <= limit, count: n, limit, resetSec: (bucket + 1) * windowSec - nowSec }
+  } catch (e) {
+    try { console.error('[kv] rateLimitHit failed', e?.message || e) } catch {}
+    return { allowed: false, reason: 'error' }
+  }
+}
+
+// D1 counter (atomic n=n+1 upsert).
+let rateSchemaReady = false
+async function rateLimitD1 (db, ip, limit, windowSec) {
   try {
     if (!rateSchemaReady) {
       await db.prepare('CREATE TABLE IF NOT EXISTS rate (ip TEXT NOT NULL, bucket INTEGER NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(ip, bucket))').run()
@@ -93,7 +118,6 @@ export async function rateLimitHit (ctx, ip, limit, windowSec) {
     return { allowed: count <= limit, count, limit, resetSec: (bucket + 1) * windowSec - nowSec }
   } catch (e) {
     try { console.error('[d1] rateLimitHit failed', e?.message || e) } catch {}
-    // On error, fail closed for guests (don't let abuse through).
     return { allowed: false, reason: 'error' }
   }
 }

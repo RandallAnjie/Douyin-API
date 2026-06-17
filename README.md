@@ -36,6 +36,7 @@ it into a RandallFlare worker (or `wrangler` project with
 | `DEFAULT_USER_AGENT` | override the signing UA (advanced) | Chrome 90 desktop |
 | `DOUYIN_R2` | R2 bucket binding for media + metadata cache | *(unbound → no cache)* |
 | `DOUYIN_D1` | D1 database binding for the query log / `/admin` | *(unbound → admin empty)* |
+| `DOUYIN_KV` | KV binding for guest rate limiting (preferred over D1) | *(falls back to D1)* |
 | `META_CACHE_TTL` | metadata JSON freshness, seconds | `3600` (1h) |
 | `GUEST_ENABLED` | allow unauthenticated parsing (`0`/`false` to disable) | on |
 | `GUEST_RATE_LIMIT` | guest parses per window per IP | `20` |
@@ -130,9 +131,11 @@ Unauthenticated visitors can use the 解析台 to parse and download:
   after `GUEST_LINK_TTL` (default 2h). Authenticated callers get
   permanent links + raw JSON.
 - Guests are **rate-limited per IP** (`GUEST_RATE_LIMIT` per
-  `GUEST_RATE_WINDOW`) using D1, so guest mode **requires `DOUYIN_D1`** —
-  without it guests are refused (503). Set `GUEST_ENABLED=0` to require a
-  token for everyone.
+  `GUEST_RATE_WINDOW`). The counter prefers **`DOUYIN_KV`** (TTL-expiring,
+  no table growth) and falls back to **`DOUYIN_D1`**; with neither bound
+  guests are refused (503). KV trades exact counting for speed (the
+  get→incr→put isn't atomic, so a burst may slip a few over); D1 counts
+  atomically. Set `GUEST_ENABLED=0` to require a token for everyone.
 
 ## Notes
 
