@@ -1186,7 +1186,7 @@ function parseRangeHeader(header, totalSize) {
   const cappedEnd = Math.min(end, totalSize - 1);
   return { start, end: cappedEnd, length: cappedEnd - start + 1 };
 }
-async function serveFromR2(bucket, request, key, contentType) {
+async function serveFromR2(bucket, request, key, contentType, minSize = 0) {
   if (!bucket || typeof bucket.head !== "function") return null;
   let head;
   try {
@@ -1195,6 +1195,7 @@ async function serveFromR2(bucket, request, key, contentType) {
     return null;
   }
   if (!head) return null;
+  if (minSize && (Number(head.size) || 0) < minSize) return null;
   const totalSize = Number(head.size) || 0;
   const storedType = head.httpMetadata?.contentType || contentType || "application/octet-stream";
   const rangeHeader = request.headers.get("range");
@@ -1236,32 +1237,6 @@ async function serveFromR2(bucket, request, key, contentType) {
       "x-cache-source": "r2"
     }
   });
-}
-function teeIntoCache(bucket, ctx, key, upstreamResponse, contentType) {
-  if (!bucket || !upstreamResponse.ok || !upstreamResponse.body) return upstreamResponse;
-  const finalType = contentType || upstreamResponse.headers.get("content-type") || "application/octet-stream";
-  const lenHeader = upstreamResponse.headers.get("content-length");
-  const total = lenHeader && /^\d+$/.test(lenHeader) ? Number(lenHeader) : null;
-  let userBranch, r2Branch;
-  try {
-    [userBranch, r2Branch] = upstreamResponse.body.tee();
-  } catch {
-    return upstreamResponse;
-  }
-  const put = bucket.put(key, r2Branch, { httpMetadata: { contentType: finalType } }).catch((e) => {
-    try {
-      console.error("[r2] put failed", key, e?.message || e);
-    } catch {
-    }
-  });
-  if (ctx?.waitUntil) ctx.waitUntil(put);
-  const out = new Headers();
-  out.set("content-type", finalType);
-  if (total != null) out.set("content-length", String(total));
-  out.set("accept-ranges", "bytes");
-  out.set("cache-control", "public, max-age=300");
-  out.set("x-cache-source", "upstream-tee");
-  return new Response(userBranch, { status: upstreamResponse.status, headers: out });
 }
 async function cachePopulateAside(bucket, ctx, key, rangeFetcher, fullFetcher, contentType) {
   const userPromise = rangeFetcher();
@@ -1318,15 +1293,17 @@ async function r2PutRetry(bucket, key, makeBody, opts, tries = 4) {
   }
   return false;
 }
-function putJson(bucket, key, obj) {
-  if (!bucket) return Promise.resolve(false);
+function putJson(bucket, ctx, key, obj) {
+  if (!bucket) return;
   const json = JSON.stringify(obj);
-  return r2PutRetry(
+  const p = r2PutRetry(
     bucket,
     key,
     () => new Response(json).body,
-    { httpMetadata: { contentType: "application/json; charset=utf-8" } }
+    { httpMetadata: { contentType: "application/json; charset=utf-8" } },
+    2
   );
+  if (ctx?.waitUntil) ctx.waitUntil(p);
 }
 
 // src/tiktok/app/crawler.js
@@ -1373,7 +1350,7 @@ async function fetchDouyinDetailCached(ctx, awemeId, refresh = false) {
     if (cached) return { data: cached, cached: true };
   }
   const data = await fetchOneVideo(ctx, awemeId);
-  await putJson(bucket, key, data);
+  putJson(bucket, ctx, key, data);
   return { data, cached: false };
 }
 async function fetchTiktokAwemeCached(ctx, awemeId, refresh = false) {
@@ -1384,7 +1361,7 @@ async function fetchTiktokAwemeCached(ctx, awemeId, refresh = false) {
     if (cached) return { data: cached, cached: true };
   }
   const data = await fetchOneVideo2(ctx, awemeId);
-  await putJson(bucket, key, data);
+  putJson(bucket, ctx, key, data);
   return { data, cached: false };
 }
 
@@ -1877,6 +1854,9 @@ function detectPlatform(url) {
   return null;
 }
 async function resolvePlatformId(url) {
+  if (/\/proxy\?/.test(url) || /[?&]kind=/.test(url)) {
+    throw new HTTPException(400, { message: "\u8FD9\u662F\u89E3\u6790\u7ED3\u679C\u94FE\u63A5\uFF0C\u8BF7\u7C98\u8D34\u6296\u97F3/TikTok \u7684\u539F\u59CB\u5206\u4EAB\u53E3\u4EE4" });
+  }
   const platform = detectPlatform(url);
   if (platform === "douyin") return { platform, id: await getAwemeId(url) };
   if (platform === "tiktok") return { platform, id: await getTiktokAwemeId(url) };
@@ -2245,7 +2225,8 @@ async function downloadService(request, ctx) {
 
 // src/service/proxy.js
 var BUFFER_CAP = 20 * 1024 * 1024;
-var SMALL_MEDIA = 2 * 1024 * 1024;
+var MIN_CACHE_BYTES = 1024;
+var minSizeForKind = (kind) => kind === "nwm" || kind === "wm" ? 1e4 : 256;
 var REFERER = { douyin: "https://www.douyin.com/", tiktok: "https://www.tiktok.com/" };
 async function proxyService(request, ctx) {
   const url = new URL(request.url);
@@ -2262,7 +2243,7 @@ async function proxyService(request, ctx) {
   const bucket = ctx.config.mediaR2;
   const key = mediaKey(platform, id, kind);
   if (bucket && !refresh) {
-    const hit = await serveFromR2(bucket, request, key);
+    const hit = await serveFromR2(bucket, request, key, void 0, minSizeForKind(kind));
     if (hit) return withDisposition(hit, download, platform, id, kind);
   }
   const { raw } = await fetchRawById(ctx, platform, id, refresh);
@@ -2293,28 +2274,22 @@ async function proxyService(request, ctx) {
     return withDisposition(wrapMedia(upstream, contentType, "upstream-plain"), download, platform, id, kind, ext);
   }
   const cl = Number(upstream.headers.get("content-length") || 0);
-  if (cl <= BUFFER_CAP) {
-    const buf = await upstream.arrayBuffer();
-    const size = buf.byteLength;
-    const putP = r2PutRetry(bucket, key, () => new Response(buf).body, { httpMetadata: { contentType } });
-    if (size <= SMALL_MEDIA) {
-      try {
-        await putP;
-      } catch {
-      }
-    } else if (ctx?.waitUntil) {
-      ctx.waitUntil(putP);
-    }
-    const out = new Headers({
-      "content-type": contentType,
-      "content-length": String(size),
-      "accept-ranges": "bytes",
-      "cache-control": "public, max-age=300",
-      "x-cache-source": "upstream-buffer"
-    });
-    return withDisposition(new Response(buf, { status: 200, headers: out }), download, platform, id, kind, ext);
+  if (cl > BUFFER_CAP) {
+    return withDisposition(wrapMedia(upstream, contentType, "upstream-plain"), download, platform, id, kind, ext);
   }
-  return withDisposition(teeIntoCache(bucket, ctx, key, upstream, contentType), download, platform, id, kind, ext);
+  const buf = await upstream.arrayBuffer();
+  const size = buf.byteLength;
+  if (size >= MIN_CACHE_BYTES && ctx?.waitUntil) {
+    ctx.waitUntil(r2PutRetry(bucket, key, () => new Response(buf).body, { httpMetadata: { contentType } }, 2));
+  }
+  const out = new Headers({
+    "content-type": contentType,
+    "content-length": String(size),
+    "accept-ranges": "bytes",
+    "cache-control": "public, max-age=300",
+    "x-cache-source": "upstream-buffer"
+  });
+  return withDisposition(new Response(buf, { status: 200, headers: out }), download, platform, id, kind, ext);
 }
 function wrapMedia(upstream, contentType, source) {
   const out = new Headers();
@@ -2802,6 +2777,9 @@ async function router(request, ctx) {
     pathname = pathname.slice(prefix.length);
   }
   if (pathname === "") pathname = "/";
+  if (pathname === "/favicon.ico") {
+    return new Response(null, { status: 204 });
+  }
   if (pathname === "/" && request.method === "GET") {
     return appService(request, ctx);
   }

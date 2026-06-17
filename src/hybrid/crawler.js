@@ -20,6 +20,11 @@ export function detectPlatform (url) {
 
 // Resolve a share URL to { platform, id }.
 export async function resolvePlatformId (url) {
+  // Reject our own result links pasted back in (a /proxy URL contains
+  // our host's "douyin" and would otherwise be misdetected + fetched).
+  if (/\/proxy\?/.test(url) || /[?&]kind=/.test(url)) {
+    throw new HTTPException(400, { message: '这是解析结果链接，请粘贴抖音/TikTok 的原始分享口令' })
+  }
   const platform = detectPlatform(url)
   if (platform === 'douyin') return { platform, id: await getAwemeId(url) }
   if (platform === 'tiktok') return { platform, id: await getTiktokAwemeId(url) }

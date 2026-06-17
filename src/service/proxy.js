@@ -10,16 +10,19 @@
 import { HTTPException } from '../utils/http-exception.js'
 import { requireProxyAuth } from '../utils/auth.js'
 import { fetchRawById, toMinimal, resolveKindUrl } from '../hybrid/crawler.js'
-import { serveFromR2, teeIntoCache, cachePopulateAside, r2PutRetry, mediaKey } from '../utils/r2cache.js'
+import { serveFromR2, cachePopulateAside, r2PutRetry, mediaKey } from '../utils/r2cache.js'
 
-// Media at or under this size is buffered so the R2 write can be
-// retried from memory (the plane PUT 502s intermittently); larger
-// files fall back to a single-shot tee. Douyin/TikTok short clips and
-// images sit well under this.
+// Media at or under this is buffered so the R2 write can retry from
+// memory (the plane PUT 502s intermittently). A *known* larger body is
+// streamed straight through without caching (don't relay+buffer 80 MB).
 const BUFFER_CAP = 20 * 1024 * 1024
-// At or under this, await the R2 write (cheap, guarantees the cache
-// lands); above it, write in the background.
-const SMALL_MEDIA = 2 * 1024 * 1024
+// Don't cache a body smaller than this — it's almost certainly an
+// upstream error page, not real media (guards against poisoning the
+// cache with e.g. a 16-byte body served forever after).
+const MIN_CACHE_BYTES = 1024
+
+// Minimum plausible size per kind, used to bypass a poisoned cache hit.
+const minSizeForKind = (kind) => (kind === 'nwm' || kind === 'wm' ? 10000 : 256)
 
 const REFERER = { douyin: 'https://www.douyin.com/', tiktok: 'https://www.tiktok.com/' }
 
@@ -39,9 +42,10 @@ export async function proxyService (request, ctx) {
   const bucket = ctx.config.mediaR2
   const key = mediaKey(platform, id, kind)
 
-  // R2 hit first (cheap, handles Range).
+  // R2 hit first (cheap, handles Range). minSize bypasses a poisoned
+  // (too-small) entry so it self-heals on the next fetch.
   if (bucket && !refresh) {
-    const hit = await serveFromR2(bucket, request, key)
+    const hit = await serveFromR2(bucket, request, key, undefined, minSizeForKind(kind))
     if (hit) return withDisposition(hit, download, platform, id, kind)
   }
 
@@ -79,27 +83,30 @@ export async function proxyService (request, ctx) {
     return withDisposition(wrapMedia(upstream, contentType, 'upstream-plain'), download, platform, id, kind, ext)
   }
 
-  // Cache miss, full body. Buffer so the R2 put can retry from memory.
-  // Douyin's play CDN often omits content-length, so treat unknown
-  // length as bufferable too; only a *known* oversized body tees.
+  // A *known* large body: stream straight through, no caching (avoid
+  // relaying tens of MB through memory just to attempt an R2 put).
   const cl = Number(upstream.headers.get('content-length') || 0)
-  if (cl <= BUFFER_CAP) {
-    const buf = await upstream.arrayBuffer()
-    const size = buf.byteLength
-    const putP = r2PutRetry(bucket, key, () => new Response(buf).body, { httpMetadata: { contentType } })
-    // Small media (covers/images/short clips): await so it reliably
-    // lands. Larger clips: cache in the background.
-    if (size <= SMALL_MEDIA) { try { await putP } catch {} } else if (ctx?.waitUntil) { ctx.waitUntil(putP) }
-    const out = new Headers({
-      'content-type': contentType,
-      'content-length': String(size),
-      'accept-ranges': 'bytes',
-      'cache-control': 'public, max-age=300',
-      'x-cache-source': 'upstream-buffer'
-    })
-    return withDisposition(new Response(buf, { status: 200, headers: out }), download, platform, id, kind, ext)
+  if (cl > BUFFER_CAP) {
+    return withDisposition(wrapMedia(upstream, contentType, 'upstream-plain'), download, platform, id, kind, ext)
   }
-  return withDisposition(teeIntoCache(bucket, ctx, key, upstream, contentType), download, platform, id, kind, ext)
+
+  // Cache miss, bufferable body (incl. unknown length — douyin's play
+  // CDN often omits content-length). Buffer, serve from memory, and
+  // cache in the BACKGROUND (never block the user response on the R2
+  // put). Skip caching a suspiciously small body (likely an error).
+  const buf = await upstream.arrayBuffer()
+  const size = buf.byteLength
+  if (size >= MIN_CACHE_BYTES && ctx?.waitUntil) {
+    ctx.waitUntil(r2PutRetry(bucket, key, () => new Response(buf).body, { httpMetadata: { contentType } }, 2))
+  }
+  const out = new Headers({
+    'content-type': contentType,
+    'content-length': String(size),
+    'accept-ranges': 'bytes',
+    'cache-control': 'public, max-age=300',
+    'x-cache-source': 'upstream-buffer'
+  })
+  return withDisposition(new Response(buf, { status: 200, headers: out }), download, platform, id, kind, ext)
 }
 
 function wrapMedia (upstream, contentType, source) {

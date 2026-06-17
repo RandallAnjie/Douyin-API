@@ -28,6 +28,9 @@ export async function router (request, ctx) {
   }
   if (pathname === '') pathname = '/'
 
+  if (pathname === '/favicon.ico') {
+    return new Response(null, { status: 204 })
+  }
   if (pathname === '/' && request.method === 'GET') {
     return appService(request, ctx)
   }

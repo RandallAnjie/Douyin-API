@@ -15,7 +15,7 @@ export async function fetchDouyinDetailCached (ctx, awemeId, refresh = false) {
     if (cached) return { data: cached, cached: true }
   }
   const data = await douyin.fetchOneVideo(ctx, awemeId)
-  await putJson(bucket, key, data)
+  putJson(bucket, ctx, key, data)
   return { data, cached: false }
 }
 
@@ -28,6 +28,6 @@ export async function fetchTiktokAwemeCached (ctx, awemeId, refresh = false) {
     if (cached) return { data: cached, cached: true }
   }
   const data = await tiktokApp.fetchOneVideo(ctx, awemeId)
-  await putJson(bucket, key, data)
+  putJson(bucket, ctx, key, data)
   return { data, cached: false }
 }

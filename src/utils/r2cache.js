@@ -27,12 +27,15 @@ function parseRangeHeader (header, totalSize) {
 }
 
 // Serve a key from R2 honouring Range. Returns Response on hit, null on
-// miss / no bucket.
-export async function serveFromR2 (bucket, request, key, contentType) {
+// miss / no bucket. `minSize` guards against serving a poisoned cache
+// entry (e.g. a tiny upstream error body cached as a video): an object
+// smaller than minSize is treated as a miss so the caller re-fetches.
+export async function serveFromR2 (bucket, request, key, contentType, minSize = 0) {
   if (!bucket || typeof bucket.head !== 'function') return null
   let head
   try { head = await bucket.head(key) } catch { return null }
   if (!head) return null
+  if (minSize && (Number(head.size) || 0) < minSize) return null
 
   const totalSize = Number(head.size) || 0
   const storedType = head.httpMetadata?.contentType || contentType || 'application/octet-stream'
@@ -156,16 +159,19 @@ export async function r2PutRetry (bucket, key, makeBody, opts, tries = 4) {
   return false
 }
 
-// Put a JSON object (stream body + retry). Returns the put promise so
-// callers can AWAIT it — the plane PUT 502s intermittently and the
-// retry loop must run inside the live request, since waitUntil can be
-// reclaimed before all attempts finish. Only runs on a cache miss.
-export function putJson (bucket, key, obj) {
-  if (!bucket) return Promise.resolve(false)
+// Put a JSON object (stream body + retry), in the BACKGROUND via
+// waitUntil. Caching must never block/slow the user response — the
+// plane PUT 502s intermittently and each attempt can take ~10s, so
+// awaiting would stall the parse. Best-effort: if it doesn't land, the
+// next request just re-fetches.
+export function putJson (bucket, ctx, key, obj) {
+  if (!bucket) return
   const json = JSON.stringify(obj)
-  return r2PutRetry(
+  const p = r2PutRetry(
     bucket, key,
     () => new Response(json).body,
-    { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
+    { httpMetadata: { contentType: 'application/json; charset=utf-8' } },
+    2
   )
+  if (ctx?.waitUntil) ctx.waitUntil(p)
 }
