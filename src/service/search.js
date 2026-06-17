@@ -96,7 +96,10 @@ footer a{color:var(--muted)}
     th.appendChild(el('span','hot','🔥'+(row.hits||1)))
     var dl=el('a','datalink','📊');dl.href='/work?platform='+encodeURIComponent(row.platform)+'&id='+encodeURIComponent(row.video_id);dl.addEventListener('click',function(e){e.stopPropagation()});th.appendChild(dl)
     a.appendChild(th)
-    var info=el('div','info');info.appendChild(el('div','who',row.author||'未知作者'));info.appendChild(el('div','ttl',row.description||'(无标题)'));a.appendChild(info)
+    var info=el('div','info')
+    if(row.author_id){var wa=el('a','who',row.author||'未知作者');wa.href='/author?platform='+encodeURIComponent(row.platform)+'&id='+encodeURIComponent(row.author_id);wa.style.textDecoration='none';wa.addEventListener('click',function(e){e.stopPropagation()});info.appendChild(wa)}
+    else info.appendChild(el('div','who',row.author||'未知作者'))
+    info.appendChild(el('div','ttl',row.description||'(无标题)'));a.appendChild(info)
     return a
   }
   async function run(p){

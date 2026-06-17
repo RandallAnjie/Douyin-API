@@ -2915,6 +2915,7 @@ footer a{color:var(--muted)}
     <button class="tab on" data-sort=recent id=tabRecent>\u6700\u8FD1</button>
     <button class=tab data-sort=hot id=tabHot>\u70ED\u5EA6</button>
     <span class=spacer></span>
+    <a href="/search">\u641C\u7D22</a>
     <a href="/">\u2190 \u53BB\u89E3\u6790</a>
   </div>
   <p id=status class=status>\u52A0\u8F7D\u4E2D\u2026</p>
@@ -2946,7 +2947,8 @@ footer a{color:var(--muted)}
     var dl=el('a','datalink','\u{1F4CA}');dl.href='/work?platform='+encodeURIComponent(row.platform)+'&id='+encodeURIComponent(row.video_id);dl.title='\u6570\u636E\u5206\u6790';dl.addEventListener('click',function(e){e.stopPropagation()});th.appendChild(dl)
     a.appendChild(th)
     var info=el('div','info')
-    info.appendChild(el('div','who',row.author||'\u672A\u77E5\u4F5C\u8005'))
+    if(row.author_id){var wa=el('a','who',row.author||'\u672A\u77E5\u4F5C\u8005');wa.href='/author?platform='+encodeURIComponent(row.platform)+'&id='+encodeURIComponent(row.author_id);wa.style.textDecoration='none';wa.addEventListener('click',function(e){e.stopPropagation()});info.appendChild(wa)}
+    else info.appendChild(el('div','who',row.author||'\u672A\u77E5\u4F5C\u8005'))
     info.appendChild(el('div','ttl',row.description||'(\u65E0\u6807\u9898)'))
     var d=dur(row.duration);info.appendChild(el('div','when',ago(row.updated_at)+(d?(' \xB7 '+d):'')))
     a.appendChild(info)
@@ -3311,7 +3313,10 @@ footer a{color:var(--muted)}
     th.appendChild(el('span','hot','\u{1F525}'+(row.hits||1)))
     var dl=el('a','datalink','\u{1F4CA}');dl.href='/work?platform='+encodeURIComponent(row.platform)+'&id='+encodeURIComponent(row.video_id);dl.addEventListener('click',function(e){e.stopPropagation()});th.appendChild(dl)
     a.appendChild(th)
-    var info=el('div','info');info.appendChild(el('div','who',row.author||'\u672A\u77E5\u4F5C\u8005'));info.appendChild(el('div','ttl',row.description||'(\u65E0\u6807\u9898)'));a.appendChild(info)
+    var info=el('div','info')
+    if(row.author_id){var wa=el('a','who',row.author||'\u672A\u77E5\u4F5C\u8005');wa.href='/author?platform='+encodeURIComponent(row.platform)+'&id='+encodeURIComponent(row.author_id);wa.style.textDecoration='none';wa.addEventListener('click',function(e){e.stopPropagation()});info.appendChild(wa)}
+    else info.appendChild(el('div','who',row.author||'\u672A\u77E5\u4F5C\u8005'))
+    info.appendChild(el('div','ttl',row.description||'(\u65E0\u6807\u9898)'));a.appendChild(info)
     return a
   }
   async function run(p){
@@ -3673,7 +3678,7 @@ footer a{color:var(--muted)}
   <p id=status class=status>\u7B49\u5F85\u53E3\u4EE4</p>
   <div id=out></div>
 
-  <footer>\u81EA\u6258\u7BA1\u4E8E RandallFlare \xB7 <a href="/discover">\u53D1\u73B0</a> \xB7 <a href="/admin">\u6863\u6848</a> \xB7 <a href="/docs">\u63A5\u53E3\u6587\u6863</a></footer>
+  <footer>\u81EA\u6258\u7BA1\u4E8E RandallFlare \xB7 <a href="/discover">\u53D1\u73B0</a> \xB7 <a href="/search">\u641C\u7D22</a> \xB7 <a href="/admin">\u6863\u6848</a> \xB7 <a href="/docs">\u63A5\u53E3\u6587\u6863</a></footer>
 </main>
 
 <script>
