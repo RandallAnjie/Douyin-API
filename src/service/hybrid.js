@@ -70,6 +70,10 @@ export async function hybridService (route, request, ctx) {
         play: s.play_count, digg: s.digg_count, comment: s.comment_count,
         share: s.share_count, collect: s.collect_count
       },
+      tags: Array.isArray(raw.text_extra)
+        ? raw.text_extra.map(t => t.hashtag_name).filter(Boolean)
+        : null,
+      music: raw.music ? { id: raw.music.id, title: raw.music.title, author: raw.music.author } : null,
       description: min.desc || null,
       original_url: target,
       cover: proxyLink(request, ctx, platform, id, 'cover'),

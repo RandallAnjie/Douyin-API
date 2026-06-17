@@ -179,8 +179,8 @@ function sha1Bytes(input) {
   const w = new Array(80);
   for (let off = 0; off < bytes.length; off += 64) {
     for (let i = 0; i < 16; i++) {
-      const j = off + i * 4;
-      w[i] = (bytes[j] << 24 | bytes[j + 1] << 16 | bytes[j + 2] << 8 | bytes[j + 3]) >>> 0;
+      const j2 = off + i * 4;
+      w[i] = (bytes[j2] << 24 | bytes[j2 + 1] << 16 | bytes[j2 + 2] << 8 | bytes[j2 + 3]) >>> 0;
     }
     for (let i = 16; i < 80; i++) {
       w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
@@ -296,25 +296,25 @@ var rotl = (x, n) => {
 };
 var p0 = (x) => (x ^ rotl(x, 9) ^ rotl(x, 17)) >>> 0;
 var p1 = (x) => (x ^ rotl(x, 15) ^ rotl(x, 23)) >>> 0;
-var tj = (j) => j < 16 ? 2043430169 : 2055708042;
-var ff = (j, x, y, z) => (j < 16 ? x ^ y ^ z : x & y | x & z | y & z) >>> 0;
-var gg = (j, x, y, z) => (j < 16 ? x ^ y ^ z : x & y | ~x & z) >>> 0;
+var tj = (j2) => j2 < 16 ? 2043430169 : 2055708042;
+var ff = (j2, x, y, z) => (j2 < 16 ? x ^ y ^ z : x & y | x & z | y & z) >>> 0;
+var gg = (j2, x, y, z) => (j2 < 16 ? x ^ y ^ z : x & y | ~x & z) >>> 0;
 function cf(v, b) {
   const w = new Array(68);
   for (let i = 0; i < 16; i++) {
     w[i] = (b[4 * i] << 24 | b[4 * i + 1] << 16 | b[4 * i + 2] << 8 | b[4 * i + 3]) >>> 0;
   }
-  for (let j = 16; j < 68; j++) {
-    w[j] = (p1((w[j - 16] ^ w[j - 9] ^ rotl(w[j - 3], 15)) >>> 0) ^ rotl(w[j - 13], 7) ^ w[j - 6]) >>> 0;
+  for (let j2 = 16; j2 < 68; j2++) {
+    w[j2] = (p1((w[j2 - 16] ^ w[j2 - 9] ^ rotl(w[j2 - 3], 15)) >>> 0) ^ rotl(w[j2 - 13], 7) ^ w[j2 - 6]) >>> 0;
   }
   const w1 = new Array(64);
-  for (let j = 0; j < 64; j++) w1[j] = (w[j] ^ w[j + 4]) >>> 0;
+  for (let j2 = 0; j2 < 64; j2++) w1[j2] = (w[j2] ^ w[j2 + 4]) >>> 0;
   let [a, bb, c, d, e, f, g, h] = v;
-  for (let j = 0; j < 64; j++) {
-    const ss1 = rotl((rotl(a, 12) + e >>> 0) + rotl(tj(j), j) >>> 0, 7);
+  for (let j2 = 0; j2 < 64; j2++) {
+    const ss1 = rotl((rotl(a, 12) + e >>> 0) + rotl(tj(j2), j2) >>> 0, 7);
     const ss2 = (ss1 ^ rotl(a, 12)) >>> 0;
-    const tt1 = (ff(j, a, bb, c) + d >>> 0) + (ss2 + w1[j] >>> 0) >>> 0;
-    const tt2 = (gg(j, e, f, g) + h >>> 0) + (ss1 + w[j] >>> 0) >>> 0;
+    const tt1 = (ff(j2, a, bb, c) + d >>> 0) + (ss2 + w1[j2] >>> 0) >>> 0;
+    const tt2 = (gg(j2, e, f, g) + h >>> 0) + (ss1 + w[j2] >>> 0) >>> 0;
     d = c;
     c = rotl(bb, 9);
     bb = a;
@@ -429,8 +429,8 @@ function cycle(state, blk) {
 function bytesToWords(bytes, start) {
   const w = new Array(16);
   for (let i = 0; i < 16; i++) {
-    const j = start + i * 4;
-    w[i] = bytes[j] | bytes[j + 1] << 8 | bytes[j + 2] << 16 | bytes[j + 3] << 24;
+    const j2 = start + i * 4;
+    w[i] = bytes[j2] | bytes[j2 + 1] << 8 | bytes[j2 + 2] << 16 | bytes[j2 + 3] << 24;
   }
   return w;
 }
@@ -479,12 +479,12 @@ var bytesToStr = (bytes) => {
 function rc4(key, data) {
   const s = new Array(256);
   for (let i = 0; i < 256; i++) s[i] = i;
-  let j = 0;
+  let j2 = 0;
   for (let i = 0; i < 256; i++) {
-    j = (j + s[i] + key[i % key.length]) % 256;
+    j2 = (j2 + s[i] + key[i % key.length]) % 256;
     const t = s[i];
-    s[i] = s[j];
-    s[j] = t;
+    s[i] = s[j2];
+    s[j2] = t;
   }
   const out = new Array(data.length);
   let a = 0;
@@ -564,7 +564,7 @@ var list1 = (n) => randomList(n, 170, 85, 1, 2, 5, 45 & 170);
 var list2 = (n) => randomList(n, 170, 85, 1, 0, 0, 0);
 var list3 = (n) => randomList(n, 170, 85, 1, 0, 5, 0);
 var b256 = (v, sh) => Math.floor(v / Math.pow(2, sh)) % 256;
-function list4(a, b, c, d, e, f, g, h, i, j, k, m, n, o, p, q3, r) {
+function list4(a, b, c, d, e, f, g, h, i, j2, k, m, n, o, p, q3, r) {
   return [
     44,
     a,
@@ -597,7 +597,7 @@ function list4(a, b, c, d, e, f, g, h, i, j, k, m, n, o, p, q3, r) {
     0,
     14,
     i,
-    j,
+    j2,
     0,
     k,
     m,
@@ -650,10 +650,10 @@ function generateResult(codes, table) {
     else if (i + 1 < codes.length) n = codes[i] << 16 | codes[i + 1] << 8;
     else n = codes[i] << 16;
     for (let t = 0; t < 4; t++) {
-      const j = js[t];
-      if (j === 6 && i + 1 >= codes.length) break;
-      if (j === 0 && i + 2 >= codes.length) break;
-      r.push(table[(n & ks[t]) >> j]);
+      const j2 = js[t];
+      if (j2 === 6 && i + 1 >= codes.length) break;
+      if (j2 === 0 && i + 2 >= codes.length) break;
+      r.push(table[(n & ks[t]) >> j2]);
     }
   }
   r.push("=".repeat((4 - r.length % 4) % 4));
@@ -2040,70 +2040,94 @@ async function ensureSchema(db) {
     video_id TEXT NOT NULL,
     type TEXT,
     author TEXT,
+    author_id TEXT,
     description TEXT,
     original_url TEXT,
     cover TEXT,
     play TEXT,
     duration INTEGER,
+    create_time INTEGER,
+    tags TEXT,
+    music TEXT,
+    parts TEXT,
     extra TEXT,
     hits INTEGER NOT NULL DEFAULT 1,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE(platform, video_id)
   )`).run();
-  for (const col of ["duration INTEGER", "extra TEXT", "create_time INTEGER", "author_id TEXT"]) {
+  for (const col of ["duration INTEGER", "extra TEXT", "create_time INTEGER", "author_id TEXT", "tags TEXT", "music TEXT", "parts TEXT"]) {
     try {
       await db.prepare(`ALTER TABLE queries ADD COLUMN ${col}`).run();
     } catch {
     }
   }
   await db.prepare(`CREATE TABLE IF NOT EXISTS authors (
-    platform TEXT NOT NULL,
-    author_id TEXT NOT NULL,
-    name TEXT,
-    avatar TEXT,
-    extra TEXT,
-    updated_at INTEGER NOT NULL,
-    PRIMARY KEY(platform, author_id)
+    platform TEXT NOT NULL, author_id TEXT NOT NULL, name TEXT, avatar TEXT,
+    extra TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY(platform, author_id)
   )`).run();
   await db.prepare(`CREATE TABLE IF NOT EXISTS stats_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    platform TEXT NOT NULL,
-    video_id TEXT NOT NULL,
-    ts INTEGER NOT NULL,
-    stats TEXT
+    id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT NOT NULL,
+    video_id TEXT NOT NULL, ts INTEGER NOT NULL, stats TEXT
   )`).run();
-  try {
-    await db.prepare("CREATE INDEX IF NOT EXISTS idx_stats_vid ON stats_history (platform, video_id, ts)").run();
-  } catch {
+  await db.prepare(`CREATE TABLE IF NOT EXISTS author_stats_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT NOT NULL,
+    author_id TEXT NOT NULL, ts INTEGER NOT NULL, follower INTEGER, extra TEXT
+  )`).run();
+  await db.prepare(`CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT NOT NULL,
+    video_id TEXT NOT NULL, comment_id TEXT NOT NULL, parent_id TEXT,
+    author TEXT, author_id TEXT, avatar TEXT, text TEXT, likes INTEGER,
+    ctime INTEGER, fetched_at INTEGER NOT NULL, UNIQUE(platform, video_id, comment_id)
+  )`).run();
+  await db.prepare(`CREATE TABLE IF NOT EXISTS kv_meta (
+    k TEXT PRIMARY KEY, v TEXT, ts INTEGER NOT NULL
+  )`).run();
+  for (const sql of [
+    "CREATE INDEX IF NOT EXISTS idx_stats_vid ON stats_history (platform, video_id, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_astats ON author_stats_history (platform, author_id, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_cmt ON comments (platform, video_id, likes)"
+  ]) {
+    try {
+      await db.prepare(sql).run();
+    } catch {
+    }
   }
   schemaReady = true;
 }
-var COLS = "platform, video_id, type, author, author_id, description, original_url, cover, play, duration, create_time, extra, hits, created_at, updated_at";
+var COLS = "platform, video_id, type, author, author_id, description, original_url, cover, play, duration, create_time, tags, music, parts, extra, hits, created_at, updated_at";
+var JSON_COLS = ["extra", "tags", "music", "parts"];
 var parseRow = (r) => {
-  if (r && typeof r.extra === "string") {
-    try {
-      r.extra = JSON.parse(r.extra);
-    } catch {
-      r.extra = null;
+  if (!r) return r;
+  for (const c of JSON_COLS) {
+    if (typeof r[c] === "string") {
+      try {
+        r[c] = JSON.parse(r[c]);
+      } catch {
+        r[c] = null;
+      }
     }
   }
   return r;
 };
+var j = (v) => v == null ? null : JSON.stringify(v);
 async function logQuery(ctx, row) {
   const db = ctx.config.d1;
   if (!db) return;
   try {
     await ensureSchema(db);
     const now = Date.now();
-    const extra = row.extra ? JSON.stringify(row.extra) : null;
+    const extra = j(row.extra);
+    const tags = j(row.tags);
+    const music = j(row.music);
+    const parts = j(row.parts);
     const authorId = row.authorInfo?.id || null;
     await db.prepare(`INSERT INTO queries
-      (platform, video_id, type, author, author_id, description, original_url, cover, play, duration, create_time, extra, hits, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+      (platform, video_id, type, author, author_id, description, original_url, cover, play, duration, create_time, tags, music, parts, extra, hits, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT(platform, video_id) DO UPDATE SET
         hits = hits + 1, updated_at = ?, type = ?, author = ?, author_id = ?,
-        description = ?, original_url = ?, cover = ?, play = ?, duration = ?, create_time = ?, extra = ?`).bind(
+        description = ?, original_url = ?, cover = ?, play = ?, duration = ?, create_time = ?, tags = ?, music = ?, parts = ?, extra = ?`).bind(
       row.platform,
       row.video_id,
       row.type,
@@ -2115,6 +2139,9 @@ async function logQuery(ctx, row) {
       row.play,
       row.duration ?? null,
       row.create_time ?? null,
+      tags,
+      music,
+      parts,
       extra,
       now,
       now,
@@ -2128,14 +2155,25 @@ async function logQuery(ctx, row) {
       row.play,
       row.duration ?? null,
       row.create_time ?? null,
+      tags,
+      music,
+      parts,
       extra
     ).run();
     if (authorId) {
       const a = row.authorInfo;
-      const aExtra = a.extra ? JSON.stringify(a.extra) : null;
+      const aExtra = j(a.extra);
       await db.prepare(`INSERT INTO authors (platform, author_id, name, avatar, extra, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(platform, author_id) DO UPDATE SET name = ?, avatar = ?, extra = ?, updated_at = ?`).bind(row.platform, authorId, a.name ?? null, a.avatar ?? null, aExtra, now, a.name ?? null, a.avatar ?? null, aExtra, now).run();
+      const follower = a.extra?.follower;
+      if (follower != null) {
+        const last = await db.prepare("SELECT ts, follower FROM author_stats_history WHERE platform = ? AND author_id = ? ORDER BY ts DESC LIMIT 1").bind(row.platform, authorId).all();
+        const p = last?.results?.[0];
+        if (!p || p.follower !== follower || now - p.ts > 216e5) {
+          await db.prepare("INSERT INTO author_stats_history (platform, author_id, ts, follower) VALUES (?, ?, ?, ?)").bind(row.platform, authorId, now, follower).run();
+        }
+      }
     }
     if (row.stats && Object.keys(row.stats).length) {
       const statsStr = JSON.stringify(row.stats);
@@ -2153,6 +2191,24 @@ async function logQuery(ctx, row) {
     }
   }
 }
+async function pageQueries(ctx, where, binds, order, limit, offset) {
+  const db = ctx.config.d1;
+  if (!db) return { rows: [], total: 0 };
+  try {
+    await ensureSchema(db);
+    const res = await db.prepare(`SELECT ${COLS} FROM queries ${where} ORDER BY ${order} LIMIT ? OFFSET ?`).bind(...binds, limit, offset).all();
+    const cnt = await db.prepare(`SELECT COUNT(*) AS n FROM queries ${where}`).bind(...binds).all();
+    return { rows: (res?.results || []).map(parseRow), total: cnt?.results?.[0]?.n || 0 };
+  } catch (e) {
+    try {
+      console.error("[d1] pageQueries failed", e?.message || e);
+    } catch {
+    }
+    return { rows: [], total: 0 };
+  }
+}
+var recentQueries = (ctx, limit = 10, offset = 0) => pageQueries(ctx, "", [], "updated_at DESC", limit, offset);
+var discoverQueries = (ctx, sort = "recent", limit = 12, offset = 0) => pageQueries(ctx, "", [], sort === "hot" ? "hits DESC, updated_at DESC" : "updated_at DESC", limit, offset);
 async function getWork(ctx, platform, videoId) {
   const db = ctx.config.d1;
   if (!db) return null;
@@ -2184,24 +2240,6 @@ async function getWork(ctx, platform, videoId) {
     return null;
   }
 }
-async function pageQueries(ctx, order, limit, offset) {
-  const db = ctx.config.d1;
-  if (!db) return { rows: [], total: 0 };
-  try {
-    await ensureSchema(db);
-    const res = await db.prepare(`SELECT ${COLS} FROM queries ORDER BY ${order} LIMIT ? OFFSET ?`).bind(limit, offset).all();
-    const cnt = await db.prepare("SELECT COUNT(*) AS n FROM queries").all();
-    return { rows: (res?.results || []).map(parseRow), total: cnt?.results?.[0]?.n || 0 };
-  } catch (e) {
-    try {
-      console.error("[d1] pageQueries failed", e?.message || e);
-    } catch {
-    }
-    return { rows: [], total: 0 };
-  }
-}
-var recentQueries = (ctx, limit = 10, offset = 0) => pageQueries(ctx, "updated_at DESC", limit, offset);
-var discoverQueries = (ctx, sort = "recent", limit = 12, offset = 0) => pageQueries(ctx, sort === "hot" ? "hits DESC, updated_at DESC" : "updated_at DESC", limit, offset);
 async function rateLimitHit(ctx, ip, limit, windowSec) {
   if (ctx.config.kv) return rateLimitKV(ctx.config.kv, ip, limit, windowSec);
   if (ctx.config.d1) return rateLimitD1(ctx.config.d1, ip, limit, windowSec);
@@ -2306,6 +2344,8 @@ async function hybridService(route, request, ctx) {
         share: s.share_count,
         collect: s.collect_count
       },
+      tags: Array.isArray(raw.text_extra) ? raw.text_extra.map((t) => t.hashtag_name).filter(Boolean) : null,
+      music: raw.music ? { id: raw.music.id, title: raw.music.title, author: raw.music.author } : null,
       description: min.desc || null,
       original_url: target,
       cover: proxyLink(request, ctx, platform, id, "cover"),
@@ -2828,6 +2868,8 @@ a.back:hover{color:var(--teal)}
 .author img{width:38px;height:38px;border-radius:50%;object-fit:cover;background:#0e0d12;border:1px solid var(--line)}
 .author .nm{font-size:15px} .author .fo{font-family:var(--mono);font-size:11px;color:var(--faint)}
 .facts{font-family:var(--mono);font-size:12px;color:var(--muted);line-height:1.9}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 0}
+.chip{font-family:var(--mono);font-size:11px;color:var(--teal);border:1px solid var(--line);border-radius:999px;padding:2px 9px;text-decoration:none}
 .acts{margin-top:12px;display:flex;gap:9px;flex-wrap:wrap}
 .btn{display:inline-block;text-decoration:none;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--ink);font-family:var(--mono);font-size:12px;padding:8px 13px;border-radius:8px}
 .btn.go{border-color:var(--coral);background:var(--coral);color:#1a0c0f;font-weight:700}
@@ -2919,6 +2961,9 @@ svg{width:100%;height:auto;display:block}
     var facts=el('div','facts')
     facts.innerHTML='\u5E73\u53F0 '+w.platform+' \xB7 '+(w.type==='image'?'\u56FE\u96C6':'\u89C6\u9891')+'<br>\u53D1\u5E03 '+datestr(w.create_time)+(w.duration?(' \xB7 \u65F6\u957F '+w.duration+'s'):'')+'<br>\u89E3\u6790 '+w.hits+' \u6B21 \xB7 \u9996\u6B21 '+tstr(w.created_at)
     meta.appendChild(facts)
+    if(w.music&&(w.music.title||w.music.author))meta.appendChild(el('div','facts','BGM \u266A '+[w.music.title,w.music.author].filter(Boolean).join(' - ')))
+    if(Array.isArray(w.parts)&&w.parts.length>1)meta.appendChild(el('div','facts','\u5206P '+w.parts.length+' \u4E2A'))
+    if(Array.isArray(w.tags)&&w.tags.length){var tg=el('div','chips');w.tags.slice(0,15).forEach(function(t){var c=el('a','chip','#'+t);c.href='/search?q='+encodeURIComponent(t);tg.appendChild(c)});meta.appendChild(tg)}
     var acts=el('div','acts')
     var go=el('a','btn go','\u91CD\u65B0\u89E3\u6790(\u52A0\u4E00\u4E2A\u6570\u636E\u70B9)');go.href='/?u='+encodeURIComponent(w.original_url||'');acts.appendChild(go)
     if(w.original_url){var o=el('a','btn','\u539F\u94FE');o.href=w.original_url;o.target='_blank';o.rel='noopener';acts.appendChild(o)}

@@ -48,6 +48,8 @@ a.back:hover{color:var(--teal)}
 .author img{width:38px;height:38px;border-radius:50%;object-fit:cover;background:#0e0d12;border:1px solid var(--line)}
 .author .nm{font-size:15px} .author .fo{font-family:var(--mono);font-size:11px;color:var(--faint)}
 .facts{font-family:var(--mono);font-size:12px;color:var(--muted);line-height:1.9}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 0}
+.chip{font-family:var(--mono);font-size:11px;color:var(--teal);border:1px solid var(--line);border-radius:999px;padding:2px 9px;text-decoration:none}
 .acts{margin-top:12px;display:flex;gap:9px;flex-wrap:wrap}
 .btn{display:inline-block;text-decoration:none;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--ink);font-family:var(--mono);font-size:12px;padding:8px 13px;border-radius:8px}
 .btn.go{border-color:var(--coral);background:var(--coral);color:#1a0c0f;font-weight:700}
@@ -139,6 +141,9 @@ svg{width:100%;height:auto;display:block}
     var facts=el('div','facts')
     facts.innerHTML='平台 '+w.platform+' · '+(w.type==='image'?'图集':'视频')+'<br>发布 '+datestr(w.create_time)+(w.duration?(' · 时长 '+w.duration+'s'):'')+'<br>解析 '+w.hits+' 次 · 首次 '+tstr(w.created_at)
     meta.appendChild(facts)
+    if(w.music&&(w.music.title||w.music.author))meta.appendChild(el('div','facts','BGM ♪ '+[w.music.title,w.music.author].filter(Boolean).join(' - ')))
+    if(Array.isArray(w.parts)&&w.parts.length>1)meta.appendChild(el('div','facts','分P '+w.parts.length+' 个'))
+    if(Array.isArray(w.tags)&&w.tags.length){var tg=el('div','chips');w.tags.slice(0,15).forEach(function(t){var c=el('a','chip','#'+t);c.href='/search?q='+encodeURIComponent(t);tg.appendChild(c)});meta.appendChild(tg)}
     var acts=el('div','acts')
     var go=el('a','btn go','重新解析(加一个数据点)');go.href='/?u='+encodeURIComponent(w.original_url||'');acts.appendChild(go)
     if(w.original_url){var o=el('a','btn','原链');o.href=w.original_url;o.target='_blank';o.rel='noopener';acts.appendChild(o)}
