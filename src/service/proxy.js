@@ -10,7 +10,7 @@
 import { HTTPException } from '../utils/http-exception.js'
 import { requireProxyAuth } from '../utils/auth.js'
 import { fetchRawById, mediaCandidates } from '../hybrid/crawler.js'
-import { serveFromR2, r2PutRetry, mediaKey } from '../utils/r2cache.js'
+import { serveFromR2, teeIntoCache, r2PutRetry, mediaKey } from '../utils/r2cache.js'
 
 // Media at or under this is buffered so the R2 write can retry from
 // memory (the plane PUT 502s intermittently). A *known* larger body is
@@ -77,28 +77,32 @@ export async function proxyService (request, ctx) {
     throw new HTTPException(502, { message: `All ${candidates.length} candidate url(s) failed for kind=${kind}` })
   }
 
-  // Range request → serve the working slice; cache the full body of the
-  // SAME working url in the background.
+  // Range request → serve the working slice now. Warm the full body into
+  // R2 ONCE, on the initial bytes=0- probe only, so later range reads
+  // hit R2 without re-downloading the whole file on every seek.
   if (rangeHeader) {
-    if (bucket && ctx?.waitUntil) {
+    if (bucket && ctx?.waitUntil && rangeStartOf(rangeHeader) === 0) {
       ctx.waitUntil(r2PutRetry(bucket, key, async () => {
         const f = await fetch(usedUrl, { headers: reqHeaders })
-        if (!f.ok || !f.body) throw new Error('aside fetch not ok')
+        if (!f.ok || !f.body) throw new Error('warm fetch not ok')
         return f.body
-      }, { httpMetadata: { contentType } }, 2))
+      }, { httpMetadata: { contentType } }, 1))
     }
     return withDisposition(wrapMedia(upstream, contentType, 'upstream-range'), download, platform, id, kind, ext)
   }
 
-  // No cache bound, or a *known* large body → stream straight through.
-  const cl = Number(upstream.headers.get('content-length') || 0)
-  if (!bucket || cl > BUFFER_CAP) {
+  if (!bucket) {
     return withDisposition(wrapMedia(upstream, contentType, 'upstream-plain'), download, platform, id, kind, ext)
   }
 
-  // Bufferable (incl. unknown length — douyin's play CDN often omits
-  // content-length). Buffer, serve from memory, cache in the BACKGROUND
-  // (never block the response). Skip caching a too-small (error) body.
+  // Non-range cache miss — cache regardless of size. Large bodies stream
+  // + cache via tee (no full buffer in memory); smaller bodies buffer so
+  // the R2 put can retry. Either way it's best-effort and never blocks.
+  const cl = Number(upstream.headers.get('content-length') || 0)
+  if (cl > BUFFER_CAP) {
+    return withDisposition(teeIntoCache(bucket, ctx, key, upstream, contentType), download, platform, id, kind, ext)
+  }
+
   const buf = await upstream.arrayBuffer()
   const size = buf.byteLength
   if (size >= MIN_CACHE_BYTES && ctx?.waitUntil) {
@@ -112,6 +116,12 @@ export async function proxyService (request, ctx) {
     'x-cache-source': 'upstream-buffer'
   })
   return withDisposition(new Response(buf, { status: 200, headers: out }), download, platform, id, kind, ext)
+}
+
+// Start byte of a Range header (0 if absent/unparseable).
+function rangeStartOf (header) {
+  const m = String(header || '').match(/bytes=(\d+)-/)
+  return m ? Number(m[1]) : 0
 }
 
 // Heuristic: does this response look like real media (vs an expired-link

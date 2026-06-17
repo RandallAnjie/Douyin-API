@@ -1238,6 +1238,32 @@ async function serveFromR2(bucket, request, key, contentType, minSize = 0) {
     }
   });
 }
+function teeIntoCache(bucket, ctx, key, upstreamResponse, contentType) {
+  if (!bucket || !upstreamResponse.ok || !upstreamResponse.body) return upstreamResponse;
+  const finalType = contentType || upstreamResponse.headers.get("content-type") || "application/octet-stream";
+  const lenHeader = upstreamResponse.headers.get("content-length");
+  const total = lenHeader && /^\d+$/.test(lenHeader) ? Number(lenHeader) : null;
+  let userBranch, r2Branch;
+  try {
+    [userBranch, r2Branch] = upstreamResponse.body.tee();
+  } catch {
+    return upstreamResponse;
+  }
+  const put = bucket.put(key, r2Branch, { httpMetadata: { contentType: finalType } }).catch((e) => {
+    try {
+      console.error("[r2] put failed", key, e?.message || e);
+    } catch {
+    }
+  });
+  if (ctx?.waitUntil) ctx.waitUntil(put);
+  const out = new Headers();
+  out.set("content-type", finalType);
+  if (total != null) out.set("content-length", String(total));
+  out.set("accept-ranges", "bytes");
+  out.set("cache-control", "public, max-age=300");
+  out.set("x-cache-source", "upstream-tee");
+  return new Response(userBranch, { status: upstreamResponse.status, headers: out });
+}
 async function getJson(bucket, key, ttlSeconds) {
   if (!bucket || typeof bucket.get !== "function") return null;
   let obj;
@@ -2274,18 +2300,21 @@ async function proxyService(request, ctx) {
     throw new HTTPException(502, { message: `All ${candidates.length} candidate url(s) failed for kind=${kind}` });
   }
   if (rangeHeader) {
-    if (bucket && ctx?.waitUntil) {
+    if (bucket && ctx?.waitUntil && rangeStartOf(rangeHeader) === 0) {
       ctx.waitUntil(r2PutRetry(bucket, key, async () => {
         const f = await fetch(usedUrl, { headers: reqHeaders });
-        if (!f.ok || !f.body) throw new Error("aside fetch not ok");
+        if (!f.ok || !f.body) throw new Error("warm fetch not ok");
         return f.body;
-      }, { httpMetadata: { contentType } }, 2));
+      }, { httpMetadata: { contentType } }, 1));
     }
     return withDisposition(wrapMedia(upstream, contentType, "upstream-range"), download, platform, id, kind, ext);
   }
-  const cl = Number(upstream.headers.get("content-length") || 0);
-  if (!bucket || cl > BUFFER_CAP) {
+  if (!bucket) {
     return withDisposition(wrapMedia(upstream, contentType, "upstream-plain"), download, platform, id, kind, ext);
+  }
+  const cl = Number(upstream.headers.get("content-length") || 0);
+  if (cl > BUFFER_CAP) {
+    return withDisposition(teeIntoCache(bucket, ctx, key, upstream, contentType), download, platform, id, kind, ext);
   }
   const buf = await upstream.arrayBuffer();
   const size = buf.byteLength;
@@ -2300,6 +2329,10 @@ async function proxyService(request, ctx) {
     "x-cache-source": "upstream-buffer"
   });
   return withDisposition(new Response(buf, { status: 200, headers: out }), download, platform, id, kind, ext);
+}
+function rangeStartOf(header) {
+  const m = String(header || "").match(/bytes=(\d+)-/);
+  return m ? Number(m[1]) : 0;
 }
 function looksLikeMedia(resp, kind, isRange) {
   if (!resp.ok || !resp.body) return false;
