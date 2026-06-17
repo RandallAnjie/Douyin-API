@@ -1282,15 +1282,32 @@ async function getJson(bucket, key, ttlSeconds) {
     return null;
   }
 }
+async function r2PutRetry(bucket, key, makeBody, opts, tries = 4) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      await bucket.put(key, makeBody(), opts);
+      return true;
+    } catch (e) {
+      if (i === tries - 1) {
+        try {
+          console.error("[r2] put gave up", key, e?.message || e);
+        } catch {
+        }
+        return false;
+      }
+    }
+  }
+  return false;
+}
 function putJson(bucket, ctx, key, obj) {
   if (!bucket) return;
-  const body = new Response(JSON.stringify(obj)).body;
-  const put = bucket.put(key, body, { httpMetadata: { contentType: "application/json; charset=utf-8" } }).catch((e) => {
-    try {
-      console.error("[r2] json put failed", key, e?.message || e);
-    } catch {
-    }
-  });
+  const json = JSON.stringify(obj);
+  const put = r2PutRetry(
+    bucket,
+    key,
+    () => new Response(json).body,
+    { httpMetadata: { contentType: "application/json; charset=utf-8" } }
+  );
   if (ctx?.waitUntil) ctx.waitUntil(put);
 }
 
