@@ -10,9 +10,10 @@ export async function adminRecentService (request, ctx) {
   if ((url.searchParams.get('token') || '') !== ctx.config.auth.token) {
     throw new HTTPException(401, { message: 'token required' })
   }
-  const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 60))
-  const rows = await recentQueries(ctx, limit)
-  return rawJsonResponse({ code: 200, count: rows.length, data: rows })
+  const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit')) || 10))
+  const page = Math.max(1, Number(url.searchParams.get('page')) || 1)
+  const { rows, total } = await recentQueries(ctx, limit, (page - 1) * limit)
+  return rawJsonResponse({ code: 200, page, limit, total, pages: Math.ceil(total / limit) || 1, count: rows.length, data: rows })
 }
 
 export async function adminPageService (request, ctx) {
@@ -58,6 +59,10 @@ input:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
 .row{margin-top:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-family:var(--mono);font-size:11px;color:var(--faint)}
 .row a{color:var(--muted);text-decoration:none}
 .row a:hover{color:var(--teal)}
+.pager{display:flex;gap:10px;align-items:center;justify-content:center;margin-top:20px;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.pager button{font-family:var(--mono);font-size:12px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--ink);padding:8px 14px;border-radius:8px}
+.pager button:hover:not(:disabled){border-color:var(--teal);color:var(--teal)}
+.pager button:disabled{opacity:.35;cursor:default}
 footer{margin-top:30px;font-family:var(--mono);font-size:11px;color:var(--faint)}
 footer a{color:var(--muted)}
 </style>
@@ -73,28 +78,38 @@ footer a{color:var(--muted)}
   </div>
   <p id=status class=status>输入钥匙后自动加载</p>
   <div id=grid class=grid></div>
-  <footer>自托管于 RandallFlare · 最近 60 条 · 重复解析合并计次</footer>
+  <div id=pager class=pager></div>
+  <footer>自托管于 RandallFlare · 每页 10 条 · 重复解析合并计次</footer>
 </main>
 <script>
 (function(){
   var $=function(s){return document.querySelector(s)}
   var KEY='dt_key'
-  var keyInput=$('#key'),statusEl=$('#status'),grid=$('#grid')
+  var keyInput=$('#key'),statusEl=$('#status'),grid=$('#grid'),pager=$('#pager')
   try{var k=localStorage.getItem(KEY);if(k)keyInput.value=k}catch(e){}
   function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
   function ago(ms){var s=Math.floor((Date.now()-ms)/1000);if(s<60)return s+'秒前';if(s<3600)return Math.floor(s/60)+'分前';if(s<86400)return Math.floor(s/3600)+'时前';return Math.floor(s/86400)+'天前'}
-  async function load(){
+  async function load(page){
+    page=page||1
     var key=(keyInput.value||'').trim()
     if(!key){statusEl.textContent='先填访问钥匙';return}
     try{localStorage.setItem(KEY,key)}catch(e){}
-    statusEl.textContent='加载中…';grid.innerHTML=''
+    statusEl.textContent='加载中…';grid.innerHTML='';pager.innerHTML=''
     try{
-      var r=await fetch('/api/admin/recent?limit=60&token='+encodeURIComponent(key))
+      var r=await fetch('/api/admin/recent?limit=10&page='+page+'&token='+encodeURIComponent(key))
       if(r.status!==200){statusEl.textContent='加载失败 HTTP '+r.status;return}
       var j=await r.json();var rows=j.data||[]
-      statusEl.textContent=rows.length?('共 '+j.count+' 条'):'还没有查询记录'
+      statusEl.textContent=j.total?('共 '+j.total+' 条 · 第 '+j.page+'/'+j.pages+' 页'):'还没有查询记录'
       rows.forEach(function(row){grid.appendChild(card(row))})
+      renderPager(j.page,j.pages)
     }catch(e){statusEl.textContent='网络错误：'+e.message}
+  }
+  function renderPager(page,pages){
+    if(!pages||pages<=1)return
+    var prev=el('button',null,'← 上一页');prev.disabled=page<=1;prev.addEventListener('click',function(){load(page-1)})
+    var info=el('span',null,page+' / '+pages)
+    var next=el('button',null,'下一页 →');next.disabled=page>=pages;next.addEventListener('click',function(){load(page+1)})
+    pager.appendChild(prev);pager.appendChild(info);pager.appendChild(next)
   }
   function card(row){
     var it=el('div','item')
@@ -112,9 +127,9 @@ footer a{color:var(--muted)}
     it.appendChild(info)
     return it
   }
-  $('#refresh').addEventListener('click',load)
-  keyInput.addEventListener('keydown',function(e){if(e.key==='Enter')load()})
-  if(keyInput.value)load()
+  $('#refresh').addEventListener('click',function(){load(1)})
+  keyInput.addEventListener('keydown',function(e){if(e.key==='Enter')load(1)})
+  if(keyInput.value)load(1)
 })();
 </script>
 </body>

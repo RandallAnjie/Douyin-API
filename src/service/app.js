@@ -124,8 +124,8 @@ footer a{color:var(--muted)}
 
   <div class=keybar>
     <label for=key>访问钥匙</label>
-    <input id=key type=password autocomplete=off spellcheck=false placeholder="你的 API Token">
-    <span class=hint>只存在本机</span>
+    <input id=key type=password autocomplete=off spellcheck=false placeholder="留空 = 游客模式（临时链接）">
+    <span class=hint>填了得永久链接 + 原始数据</span>
   </div>
 
   <div class=slot>
@@ -153,20 +153,24 @@ footer a{color:var(--muted)}
   function fmt(n){n=Number(n)||0;return n>=10000?(n/10000).toFixed(1)+'w':String(n)}
 
   var inflight=0
+  var lastGuest=false
   async function parse(text){
     var url=extractUrl(text)
     if(!url){setStatus('没找到链接，确认粘的是分享口令','warn');return}
     var key=(keyInput.value||'').trim()
-    if(!key){setStatus('先填访问钥匙','warn');keyInput.focus();return}
+    lastGuest=!key
     var my=++inflight
-    setStatus('解码中…','load');out.innerHTML=''
+    setStatus(key?'解码中…':'解码中…（游客模式）','load');out.innerHTML=''
     try{
-      var api='/api/hybrid/video_data?minimal=true&proxy=1&token='+encodeURIComponent(key)+'&url='+encodeURIComponent(url)
+      var api='/api/hybrid/video_data?minimal=true&proxy=1&url='+encodeURIComponent(url)
+      if(key)api+='&token='+encodeURIComponent(key)
       var r=await fetch(api)
       var j=await r.json()
       if(my!==inflight)return
+      if(r.status===429){setStatus((j&&j.message)||'游客次数已达上限，请稍后再试或填入访问钥匙','warn');return}
       if(r.status!==200){setStatus('失败：'+((j&&j.message)||('HTTP '+r.status)),'err');return}
-      render(j.data);setStatus('已解码 · '+(j.data&&j.data.platform||''),'ok')
+      render(j.data)
+      setStatus((key?'已解码':'已解码（游客 · 链接临时有效）')+' · '+(j.data&&j.data.platform||''),'ok')
     }catch(e){if(my===inflight)setStatus('网络错误：'+e.message,'err')}
   }
 
@@ -213,9 +217,11 @@ footer a{color:var(--muted)}
     if(d.type==='image'&&d.image_data){
       (d.image_data.no_watermark_image_list||[]).forEach(function(u,i){acts.appendChild(dlBtn(u,'图'+(i+1)))})
     }
-    var raw=el('button','btn ghost','原始 JSON')
-    raw.addEventListener('click',function(){var p=$('#raw');if(!p){p=el('pre');p.id='raw';out.appendChild(p)}p.textContent=JSON.stringify(d,null,2)})
-    acts.appendChild(raw)
+    if(!lastGuest){
+      var raw=el('button','btn ghost','原始 JSON')
+      raw.addEventListener('click',function(){var p=$('#raw');if(!p){p=el('pre');p.id='raw';out.appendChild(p)}p.textContent=JSON.stringify(d,null,2)})
+      acts.appendChild(raw)
+    }
     meta.appendChild(acts)
     card.appendChild(meta)
     out.appendChild(card)

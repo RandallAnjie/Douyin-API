@@ -12,18 +12,30 @@ export function proxyBase (request, ctx) {
   return `${proto}://${host}${ctx.config.http.prefix}`
 }
 
-export function proxyLink (request, ctx, platform, id, kind) {
-  const auth = sign(canonical('proxy', platform, id), ctx.config.auth.token)
-  const params = new URLSearchParams({ platform, id: String(id), kind, auth })
+// Build a /proxy link. When expSec is given the link is TEMPORARY: an
+// exp=<unix-sec> is appended and the HMAC covers it, so guests get a
+// link that stops working after the TTL and can't be tampered with.
+export function proxyLink (request, ctx, platform, id, kind, expSec) {
+  const secret = ctx.config.auth.token
+  const params = new URLSearchParams({ platform, id: String(id), kind })
+  if (expSec) {
+    const exp = Math.floor(Date.now() / 1000) + expSec
+    params.set('exp', String(exp))
+    params.set('auth', sign(`${canonical('proxy', platform, id)}${exp}`, secret))
+  } else {
+    params.set('auth', sign(canonical('proxy', platform, id), secret))
+  }
   return `${proxyBase(request, ctx)}/proxy?${params.toString()}`
 }
 
 // Replace the CDN URLs in a minimal hybrid result with /proxy links.
-export function rewriteMinimalToProxy (minimal, request, ctx) {
+// expSec (optional) makes them temporary — used for guests.
+export function rewriteMinimalToProxy (minimal, request, ctx, expSec) {
   const { platform, video_id: id } = minimal
+  const L = (kind) => proxyLink(request, ctx, platform, id, kind, expSec)
   if (minimal.video_data) {
-    const nwm = proxyLink(request, ctx, platform, id, 'nwm')
-    const wm = proxyLink(request, ctx, platform, id, 'wm')
+    const nwm = L('nwm')
+    const wm = L('wm')
     minimal.video_data = {
       ...minimal.video_data,
       nwm_video_url: nwm,
@@ -34,12 +46,12 @@ export function rewriteMinimalToProxy (minimal, request, ctx) {
   }
   if (minimal.image_data) {
     minimal.image_data = {
-      no_watermark_image_list: minimal.image_data.no_watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `image${i}`)),
-      watermark_image_list: minimal.image_data.watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `imagewm${i}`))
+      no_watermark_image_list: minimal.image_data.no_watermark_image_list.map((_, i) => L(`image${i}`)),
+      watermark_image_list: minimal.image_data.watermark_image_list.map((_, i) => L(`imagewm${i}`))
     }
   }
   if (minimal.cover_data) {
-    minimal.cover_data = { ...minimal.cover_data, cover: proxyLink(request, ctx, platform, id, 'cover') }
+    minimal.cover_data = { ...minimal.cover_data, cover: L('cover') }
   }
   return minimal
 }

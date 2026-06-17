@@ -53,6 +53,17 @@ export function buildConfig (env) {
       // on a request bypasses + repopulates.
       metaTtl: toNumber(env.META_CACHE_TTL, 3600)
     },
+    // Guest mode: unauthenticated callers can parse (hybrid/video_data)
+    // and get TEMPORARY proxied download links, but never raw JSON, the
+    // raw per-platform endpoints, or /admin. Rate-limited per IP via D1
+    // (so guest access requires a D1 binding — without one we can't
+    // enforce limits and guests are refused). Default on.
+    guest: {
+      enabled: !['0', 'false', 'no', 'off'].includes(String(env.GUEST_ENABLED ?? '').toLowerCase()),
+      limit: toNumber(env.GUEST_RATE_LIMIT, 20),
+      windowSec: toNumber(env.GUEST_RATE_WINDOW, 3600),
+      linkTtlSec: toNumber(env.GUEST_LINK_TTL, 7200)
+    },
     log: {
       level: env.LOG_LEVEL || 'info'
     },

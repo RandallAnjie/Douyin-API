@@ -1,10 +1,10 @@
 // /api/hybrid/* and /download handlers.
 import { HTTPException } from '../utils/http-exception.js'
 import { jsonResponse } from '../utils/respond.js'
-import { requireAuth } from '../utils/auth.js'
+import { isAuthorised, getClientIp } from '../utils/auth.js'
 import { hybridParseSingleVideo, resolvePlatformId, fetchRawById, toMinimal } from '../hybrid/crawler.js'
 import { rewriteMinimalToProxy, proxyLink } from '../utils/proxy-link.js'
-import { logQuery } from '../utils/db.js'
+import { logQuery, rateLimitHit } from '../utils/db.js'
 
 const PLATFORM = 'hybrid'
 const truthy = (v) => ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase())
@@ -14,19 +14,42 @@ export async function hybridService (route, request, ctx) {
     const url = new URL(request.url)
     const target = url.searchParams.get('url')
     if (!target) throw new HTTPException(400, { message: 'Missing query param: url' })
-    requireAuth(request, ctx, PLATFORM, 'video_data', target)
-    const minimal = truthy(url.searchParams.get('minimal') ?? 'false')
-    const refresh = truthy(url.searchParams.get('refresh') ?? 'false')
-    // ?proxy=1 rewrites media URLs to cached /proxy self-links (needs
-    // minimal=true since the unified schema is what carries the urls).
-    const proxy = truthy(url.searchParams.get('proxy') ?? 'false')
+
+    const authed = isAuthorised(request, ctx, PLATFORM, 'video_data', target)
+    let guest = false
+    if (!authed) {
+      // Guest: allowed to parse, but rate-limited and restricted to
+      // minimal + temporary proxied links (never raw JSON).
+      const g = ctx.config.guest
+      if (!g.enabled) {
+        throw new HTTPException(401, { message: 'Unauthorized: pass ?token=<secret>' })
+      }
+      const rl = await rateLimitHit(ctx, getClientIp(request), g.limit, g.windowSec)
+      if (rl.reason === 'no-store') {
+        throw new HTTPException(503, { message: '游客模式需要 D1 才能限流，请联系管理员绑定 / guest mode needs a D1 binding' })
+      }
+      if (!rl.allowed) {
+        return new Response(JSON.stringify({ code: 429, message: `游客每 ${Math.round(g.windowSec / 60)} 分钟限 ${g.limit} 次，请 ${rl.resetSec}s 后再试或填入访问钥匙` }), {
+          status: 429,
+          headers: { 'content-type': 'application/json; charset=utf-8', 'retry-after': String(rl.resetSec || g.windowSec) }
+        })
+      }
+      guest = true
+    }
+
+    // Guests are forced to minimal + proxy, no refresh; authed callers
+    // honour the query params.
+    const minimal = guest ? true : truthy(url.searchParams.get('minimal') ?? 'false')
+    const proxy = guest ? true : truthy(url.searchParams.get('proxy') ?? 'false')
+    const refresh = guest ? false : truthy(url.searchParams.get('refresh') ?? 'false')
+    const linkTtl = guest ? ctx.config.guest.linkTtlSec : undefined
 
     const { platform, id } = await resolvePlatformId(target)
     const { raw } = await fetchRawById(ctx, platform, id, refresh)
     const min = toMinimal(platform, id, raw)
 
-    // Log to the D1 query history (best-effort). Store proxied cover/play
-    // links so /admin can render them directly.
+    // Log to the D1 query history (best-effort). Store permanent proxied
+    // cover/play links so /admin can render them directly.
     await logQuery(ctx, {
       platform,
       video_id: id,
@@ -39,8 +62,8 @@ export async function hybridService (route, request, ctx) {
     })
 
     let data = minimal ? min : raw
-    if (minimal && proxy) data = rewriteMinimalToProxy(data, request, ctx)
-    return jsonResponse(data, { router: 'hybrid/video_data', params: { url: target, minimal, proxy } })
+    if (minimal && proxy) data = rewriteMinimalToProxy(data, request, ctx, linkTtl)
+    return jsonResponse(data, { router: 'hybrid/video_data', params: { url: target, minimal, proxy, guest } })
   }
 
   if (request.method === 'POST' && route === 'update_cookie') {

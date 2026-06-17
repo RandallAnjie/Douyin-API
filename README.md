@@ -37,6 +37,10 @@ it into a RandallFlare worker (or `wrangler` project with
 | `DOUYIN_R2` | R2 bucket binding for media + metadata cache | *(unbound → no cache)* |
 | `DOUYIN_D1` | D1 database binding for the query log / `/admin` | *(unbound → admin empty)* |
 | `META_CACHE_TTL` | metadata JSON freshness, seconds | `3600` (1h) |
+| `GUEST_ENABLED` | allow unauthenticated parsing (`0`/`false` to disable) | on |
+| `GUEST_RATE_LIMIT` | guest parses per window per IP | `20` |
+| `GUEST_RATE_WINDOW` | guest rate-limit window, seconds | `3600` |
+| `GUEST_LINK_TTL` | guest proxy-link lifetime, seconds | `7200` (2h) |
 | `LOG_LEVEL` | `info` / `debug` / … | `info` |
 
 > The `a_bogus` / `X-Bogus` `ua_code` is baked against the default UA;
@@ -115,6 +119,20 @@ curl 'https://host/api/hybrid/video_data?url=https://www.douyin.com/video/ID&min
 
 Without `DOUYIN_R2` bound everything still works — just uncached
 (real-time direct fetches).
+
+## Guest mode
+
+Unauthenticated visitors can use the 解析台 to parse and download:
+
+- Guests get **minimal data + temporary proxied links** only — never raw
+  upstream JSON, the raw per-platform endpoints, or `/admin`.
+- Temporary links carry `&exp=` and an HMAC over it; they stop working
+  after `GUEST_LINK_TTL` (default 2h). Authenticated callers get
+  permanent links + raw JSON.
+- Guests are **rate-limited per IP** (`GUEST_RATE_LIMIT` per
+  `GUEST_RATE_WINDOW`) using D1, so guest mode **requires `DOUYIN_D1`** —
+  without it guests are refused (503). Set `GUEST_ENABLED=0` to require a
+  token for everyone.
 
 ## Notes
 

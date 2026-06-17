@@ -240,15 +240,40 @@ function hmacSha1Hex(secret, message) {
 // src/utils/auth.js
 var sign = (message, secret) => hmacSha1Hex(secret, message);
 var canonical = (platform, route, primaryId = "") => `${platform}${route}${primaryId}`;
-function requireAuth(request, ctx, platform, route, primaryId = "") {
+var getClientIp = (request) => request.headers.get("cf-connecting-ip") || request.headers.get("rf-connecting-ip") || (request.headers.get("x-forwarded-for") || "").split(",")[0].trim() || request.headers.get("x-real-ip") || "unknown";
+function isAuthorised(request, ctx, platform, route, primaryId = "") {
   const url = new URL(request.url);
   const queryToken = url.searchParams.get("token") || "";
   const queryAuth = url.searchParams.get("auth") || "";
   const secret = ctx.config.auth.token;
-  if (queryToken && queryToken === secret) return;
-  const expected = sign(canonical(platform, route, primaryId), secret);
-  if (queryAuth && queryAuth === expected) return;
-  const sent = queryAuth || queryToken || "(none)";
+  if (queryToken && queryToken === secret) return true;
+  if (queryAuth && queryAuth === sign(canonical(platform, route, primaryId), secret)) return true;
+  return false;
+}
+function requireProxyAuth(request, ctx, platform, id) {
+  const url = new URL(request.url);
+  const token = url.searchParams.get("token") || "";
+  const authp = url.searchParams.get("auth") || "";
+  const exp = url.searchParams.get("exp") || "";
+  const secret = ctx.config.auth.token;
+  if (token && token === secret) return;
+  if (authp) {
+    if (exp) {
+      const expected = sign(`${canonical("proxy", platform, id)}${exp}`, secret);
+      if (authp === expected) {
+        if (Date.now() <= Number(exp) * 1e3) return;
+        throw new HTTPException(403, { message: "\u94FE\u63A5\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u89E3\u6790 / link expired" });
+      }
+    } else if (authp === sign(canonical("proxy", platform, id), secret)) {
+      return;
+    }
+  }
+  throw new HTTPException(401, { message: "proxy: bad or expired auth" });
+}
+function requireAuth2(request, ctx, platform, route, primaryId = "") {
+  if (isAuthorised(request, ctx, platform, route, primaryId)) return;
+  const url = new URL(request.url);
+  const sent = url.searchParams.get("auth") || url.searchParams.get("token") || "(none)";
   throw new HTTPException(401, {
     message: `Unauthorized: bad token/auth for ${platform}/${route}. Pass ?token=<secret> or ?auth=HMAC-SHA1(secret,"${canonical(platform, route, primaryId)}"). Received: ${sent.slice(0, 12)}\u2026`
   });
@@ -1376,46 +1401,46 @@ async function douyinWebService(route, request, ctx) {
   const method = request.method;
   if (method === "GET" && route === "fetch_one_video") {
     const awemeId = requireQ(request, "aweme_id");
-    requireAuth(request, ctx, PLATFORM, route, awemeId);
+    requireAuth2(request, ctx, PLATFORM, route, awemeId);
     const { data, cached } = await fetchDouyinDetailCached(ctx, awemeId, truthy(q(request, "refresh")));
     return jsonResponse(data, { router: route, params: { aweme_id: awemeId }, headers: { "x-cache": cached ? "hit" : "miss" } });
   }
   if (method === "GET" && route === "fetch_user_post_videos") {
     const secUserId = requireQ(request, "sec_user_id");
-    requireAuth(request, ctx, PLATFORM, route, secUserId);
+    requireAuth2(request, ctx, PLATFORM, route, secUserId);
     const maxCursor = q(request, "max_cursor", "0");
     const count = q(request, "count", "20");
     return jsonResponse(await fetchUserPostVideos(ctx, secUserId, maxCursor, count), { router: route });
   }
   if (method === "GET" && route === "fetch_user_like_videos") {
     const secUserId = requireQ(request, "sec_user_id");
-    requireAuth(request, ctx, PLATFORM, route, secUserId);
+    requireAuth2(request, ctx, PLATFORM, route, secUserId);
     const maxCursor = q(request, "max_cursor", "0");
     const count = q(request, "counts", q(request, "count", "20"));
     return jsonResponse(await fetchUserLikeVideos(ctx, secUserId, maxCursor, count), { router: route });
   }
   if (method === "GET" && route === "fetch_user_mix_videos") {
     const mixId = requireQ(request, "mix_id");
-    requireAuth(request, ctx, PLATFORM, route, mixId);
+    requireAuth2(request, ctx, PLATFORM, route, mixId);
     const cursor = q(request, "max_cursor", q(request, "cursor", "0"));
     const count = q(request, "counts", q(request, "count", "20"));
     return jsonResponse(await fetchUserMixVideos(ctx, mixId, cursor, count), { router: route });
   }
   if (method === "GET" && route === "handler_user_profile") {
     const secUserId = requireQ(request, "sec_user_id");
-    requireAuth(request, ctx, PLATFORM, route, secUserId);
+    requireAuth2(request, ctx, PLATFORM, route, secUserId);
     return jsonResponse(await handlerUserProfile(ctx, secUserId), { router: route });
   }
   if (method === "GET" && route === "fetch_video_comments") {
     const awemeId = requireQ(request, "aweme_id");
-    requireAuth(request, ctx, PLATFORM, route, awemeId);
+    requireAuth2(request, ctx, PLATFORM, route, awemeId);
     const cursor = q(request, "cursor", "0");
     const count = q(request, "count", "20");
     return jsonResponse(await fetchVideoComments(ctx, awemeId, cursor, count), { router: route });
   }
   if (method === "GET" && route === "fetch_video_comment_replies") {
     const itemId = requireQ(request, "item_id");
-    requireAuth(request, ctx, PLATFORM, route, itemId);
+    requireAuth2(request, ctx, PLATFORM, route, itemId);
     const commentId = requireQ(request, "comment_id");
     const cursor = q(request, "cursor", "0");
     const count = q(request, "count", "20");
@@ -1423,17 +1448,17 @@ async function douyinWebService(route, request, ctx) {
   }
   if (method === "GET" && route === "fetch_user_live_videos") {
     const webcastId = requireQ(request, "webcast_id");
-    requireAuth(request, ctx, PLATFORM, route, webcastId);
+    requireAuth2(request, ctx, PLATFORM, route, webcastId);
     return jsonResponse(await fetchUserLiveVideos(ctx, webcastId), { router: route });
   }
   if (method === "GET" && route === "fetch_user_live_videos_by_room_id") {
     const roomId = requireQ(request, "room_id");
-    requireAuth(request, ctx, PLATFORM, route, roomId);
+    requireAuth2(request, ctx, PLATFORM, route, roomId);
     return jsonResponse(await fetchUserLiveVideosByRoomId(ctx, roomId), { router: route });
   }
   if (method === "GET" && route === "fetch_live_gift_ranking") {
     const roomId = requireQ(request, "room_id");
-    requireAuth(request, ctx, PLATFORM, route, roomId);
+    requireAuth2(request, ctx, PLATFORM, route, roomId);
     const rankType = q(request, "rank_type", "30");
     return jsonResponse(await fetchLiveGiftRanking(ctx, roomId, rankType), { router: route });
   }
@@ -1727,54 +1752,54 @@ async function tiktokWebService(route, request, ctx) {
   const method = request.method;
   if (method === "GET" && route === "fetch_one_video") {
     const itemId = requireQ2(request, "itemId");
-    requireAuth(request, ctx, PLATFORM2, route, itemId);
+    requireAuth2(request, ctx, PLATFORM2, route, itemId);
     return jsonResponse(await fetchOneVideo3(ctx, itemId), { router: route });
   }
   if (method === "GET" && route === "fetch_user_profile") {
     const secUid = q2(request, "secUid", "");
     const uniqueId = q2(request, "uniqueId", "");
     if (!secUid && !uniqueId) throw new HTTPException(400, { message: "Provide secUid or uniqueId" });
-    requireAuth(request, ctx, PLATFORM2, route, secUid || uniqueId);
+    requireAuth2(request, ctx, PLATFORM2, route, secUid || uniqueId);
     return jsonResponse(await fetchUserProfile(ctx, secUid, uniqueId), { router: route });
   }
   if (method === "GET" && route === "fetch_user_post") {
     const secUid = requireQ2(request, "secUid");
-    requireAuth(request, ctx, PLATFORM2, route, secUid);
+    requireAuth2(request, ctx, PLATFORM2, route, secUid);
     return jsonResponse(await fetchUserPost(ctx, secUid, q2(request, "cursor", "0"), q2(request, "count", "35"), q2(request, "coverFormat", "2")), { router: route });
   }
   if (method === "GET" && route === "fetch_user_like") {
     const secUid = requireQ2(request, "secUid");
-    requireAuth(request, ctx, PLATFORM2, route, secUid);
+    requireAuth2(request, ctx, PLATFORM2, route, secUid);
     return jsonResponse(await fetchUserLike(ctx, secUid, q2(request, "cursor", "0"), q2(request, "count", "35"), q2(request, "coverFormat", "2")), { router: route });
   }
   if (method === "GET" && route === "fetch_user_mix") {
     const mixId = requireQ2(request, "mixId");
-    requireAuth(request, ctx, PLATFORM2, route, mixId);
+    requireAuth2(request, ctx, PLATFORM2, route, mixId);
     return jsonResponse(await fetchUserMix(ctx, mixId, q2(request, "cursor", "0"), q2(request, "count", "30")), { router: route });
   }
   if (method === "GET" && route === "fetch_user_play_list") {
     const secUid = requireQ2(request, "secUid");
-    requireAuth(request, ctx, PLATFORM2, route, secUid);
+    requireAuth2(request, ctx, PLATFORM2, route, secUid);
     return jsonResponse(await fetchUserPlayList(ctx, secUid, q2(request, "cursor", "0"), q2(request, "count", "30")), { router: route });
   }
   if (method === "GET" && route === "fetch_post_comment") {
     const awemeId = requireQ2(request, "aweme_id");
-    requireAuth(request, ctx, PLATFORM2, route, awemeId);
+    requireAuth2(request, ctx, PLATFORM2, route, awemeId);
     return jsonResponse(await fetchPostComment(ctx, awemeId, q2(request, "cursor", "0"), q2(request, "count", "20"), q2(request, "current_region", "")), { router: route });
   }
   if (method === "GET" && route === "fetch_post_comment_reply") {
     const itemId = requireQ2(request, "item_id");
-    requireAuth(request, ctx, PLATFORM2, route, itemId);
+    requireAuth2(request, ctx, PLATFORM2, route, itemId);
     return jsonResponse(await fetchPostCommentReply(ctx, itemId, requireQ2(request, "comment_id"), q2(request, "cursor", "0"), q2(request, "count", "20"), q2(request, "current_region", "")), { router: route });
   }
   if (method === "GET" && route === "fetch_user_fans") {
     const secUid = requireQ2(request, "secUid");
-    requireAuth(request, ctx, PLATFORM2, route, secUid);
+    requireAuth2(request, ctx, PLATFORM2, route, secUid);
     return jsonResponse(await fetchUserFans(ctx, secUid, q2(request, "count", "30"), q2(request, "maxCursor", "0"), q2(request, "minCursor", "0")), { router: route });
   }
   if (method === "GET" && route === "fetch_user_follow") {
     const secUid = requireQ2(request, "secUid");
-    requireAuth(request, ctx, PLATFORM2, route, secUid);
+    requireAuth2(request, ctx, PLATFORM2, route, secUid);
     return jsonResponse(await fetchUserFollow(ctx, secUid, q2(request, "count", "30"), q2(request, "maxCursor", "0"), q2(request, "minCursor", "0")), { router: route });
   }
   if (method === "GET" && route === "generate_real_msToken") {
@@ -1812,7 +1837,7 @@ async function tiktokWebService(route, request, ctx) {
 async function tiktokAppService(route, request, ctx) {
   if (request.method === "GET" && route === "fetch_one_video") {
     const awemeId = requireQ2(request, "aweme_id");
-    requireAuth(request, ctx, PLATFORM2, "app_fetch_one_video", awemeId);
+    requireAuth2(request, ctx, PLATFORM2, "app_fetch_one_video", awemeId);
     const refresh = ["1", "true", "yes", "on"].includes(String(q2(request, "refresh")).toLowerCase());
     const { data, cached } = await fetchTiktokAwemeCached(ctx, awemeId, refresh);
     return jsonResponse(data, { router: `app/${route}`, headers: { "x-cache": cached ? "hit" : "miss" } });
@@ -1964,16 +1989,24 @@ function proxyBase(request, ctx) {
   const host = request.headers.get("x-forwarded-host") || u.host;
   return `${proto}://${host}${ctx.config.http.prefix}`;
 }
-function proxyLink(request, ctx, platform, id, kind) {
-  const auth = sign(canonical("proxy", platform, id), ctx.config.auth.token);
-  const params = new URLSearchParams({ platform, id: String(id), kind, auth });
+function proxyLink(request, ctx, platform, id, kind, expSec) {
+  const secret = ctx.config.auth.token;
+  const params = new URLSearchParams({ platform, id: String(id), kind });
+  if (expSec) {
+    const exp = Math.floor(Date.now() / 1e3) + expSec;
+    params.set("exp", String(exp));
+    params.set("auth", sign(`${canonical("proxy", platform, id)}${exp}`, secret));
+  } else {
+    params.set("auth", sign(canonical("proxy", platform, id), secret));
+  }
   return `${proxyBase(request, ctx)}/proxy?${params.toString()}`;
 }
-function rewriteMinimalToProxy(minimal, request, ctx) {
+function rewriteMinimalToProxy(minimal, request, ctx, expSec) {
   const { platform, video_id: id } = minimal;
+  const L = (kind) => proxyLink(request, ctx, platform, id, kind, expSec);
   if (minimal.video_data) {
-    const nwm = proxyLink(request, ctx, platform, id, "nwm");
-    const wm = proxyLink(request, ctx, platform, id, "wm");
+    const nwm = L("nwm");
+    const wm = L("wm");
     minimal.video_data = {
       ...minimal.video_data,
       nwm_video_url: nwm,
@@ -1984,12 +2017,12 @@ function rewriteMinimalToProxy(minimal, request, ctx) {
   }
   if (minimal.image_data) {
     minimal.image_data = {
-      no_watermark_image_list: minimal.image_data.no_watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `image${i}`)),
-      watermark_image_list: minimal.image_data.watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `imagewm${i}`))
+      no_watermark_image_list: minimal.image_data.no_watermark_image_list.map((_, i) => L(`image${i}`)),
+      watermark_image_list: minimal.image_data.watermark_image_list.map((_, i) => L(`imagewm${i}`))
     };
   }
   if (minimal.cover_data) {
-    minimal.cover_data = { ...minimal.cover_data, cover: proxyLink(request, ctx, platform, id, "cover") };
+    minimal.cover_data = { ...minimal.cover_data, cover: L("cover") };
   }
   return minimal;
 }
@@ -2052,22 +2085,46 @@ async function logQuery(ctx, row) {
     }
   }
 }
-async function recentQueries(ctx, limit = 60) {
+async function recentQueries(ctx, limit = 10, offset = 0) {
   const db = ctx.config.d1;
-  if (!db) return [];
+  if (!db) return { rows: [], total: 0 };
   try {
     await ensureSchema(db);
     const res = await db.prepare(
       `SELECT platform, video_id, type, author, description, original_url, cover, play, hits, created_at, updated_at
-       FROM queries ORDER BY updated_at DESC LIMIT ?`
-    ).bind(limit).all();
-    return res?.results || [];
+       FROM queries ORDER BY updated_at DESC LIMIT ? OFFSET ?`
+    ).bind(limit, offset).all();
+    const cnt = await db.prepare("SELECT COUNT(*) AS n FROM queries").first();
+    return { rows: res?.results || [], total: cnt?.n || 0 };
   } catch (e) {
     try {
       console.error("[d1] recentQueries failed", e?.message || e);
     } catch {
     }
-    return [];
+    return { rows: [], total: 0 };
+  }
+}
+var rateSchemaReady = false;
+async function rateLimitHit(ctx, ip, limit, windowSec) {
+  const db = ctx.config.d1;
+  if (!db) return { allowed: false, reason: "no-store" };
+  try {
+    if (!rateSchemaReady) {
+      await db.prepare("CREATE TABLE IF NOT EXISTS rate (ip TEXT NOT NULL, bucket INTEGER NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(ip, bucket))").run();
+      rateSchemaReady = true;
+    }
+    const nowSec = Math.floor(Date.now() / 1e3);
+    const bucket = Math.floor(nowSec / windowSec);
+    await db.prepare("INSERT INTO rate (ip, bucket, n) VALUES (?, ?, 1) ON CONFLICT(ip, bucket) DO UPDATE SET n = n + 1").bind(ip, bucket).run();
+    const row = await db.prepare("SELECT n FROM rate WHERE ip = ? AND bucket = ?").bind(ip, bucket).first();
+    const count = row?.n || 1;
+    return { allowed: count <= limit, count, limit, resetSec: (bucket + 1) * windowSec - nowSec };
+  } catch (e) {
+    try {
+      console.error("[d1] rateLimitHit failed", e?.message || e);
+    } catch {
+    }
+    return { allowed: false, reason: "error" };
   }
 }
 
@@ -2079,10 +2136,29 @@ async function hybridService(route, request, ctx) {
     const url = new URL(request.url);
     const target = url.searchParams.get("url");
     if (!target) throw new HTTPException(400, { message: "Missing query param: url" });
-    requireAuth(request, ctx, PLATFORM3, "video_data", target);
-    const minimal = truthy2(url.searchParams.get("minimal") ?? "false");
-    const refresh = truthy2(url.searchParams.get("refresh") ?? "false");
-    const proxy = truthy2(url.searchParams.get("proxy") ?? "false");
+    const authed = isAuthorised(request, ctx, PLATFORM3, "video_data", target);
+    let guest = false;
+    if (!authed) {
+      const g = ctx.config.guest;
+      if (!g.enabled) {
+        throw new HTTPException(401, { message: "Unauthorized: pass ?token=<secret>" });
+      }
+      const rl = await rateLimitHit(ctx, getClientIp(request), g.limit, g.windowSec);
+      if (rl.reason === "no-store") {
+        throw new HTTPException(503, { message: "\u6E38\u5BA2\u6A21\u5F0F\u9700\u8981 D1 \u624D\u80FD\u9650\u6D41\uFF0C\u8BF7\u8054\u7CFB\u7BA1\u7406\u5458\u7ED1\u5B9A / guest mode needs a D1 binding" });
+      }
+      if (!rl.allowed) {
+        return new Response(JSON.stringify({ code: 429, message: `\u6E38\u5BA2\u6BCF ${Math.round(g.windowSec / 60)} \u5206\u949F\u9650 ${g.limit} \u6B21\uFF0C\u8BF7 ${rl.resetSec}s \u540E\u518D\u8BD5\u6216\u586B\u5165\u8BBF\u95EE\u94A5\u5319` }), {
+          status: 429,
+          headers: { "content-type": "application/json; charset=utf-8", "retry-after": String(rl.resetSec || g.windowSec) }
+        });
+      }
+      guest = true;
+    }
+    const minimal = guest ? true : truthy2(url.searchParams.get("minimal") ?? "false");
+    const proxy = guest ? true : truthy2(url.searchParams.get("proxy") ?? "false");
+    const refresh = guest ? false : truthy2(url.searchParams.get("refresh") ?? "false");
+    const linkTtl = guest ? ctx.config.guest.linkTtlSec : void 0;
     const { platform, id } = await resolvePlatformId(target);
     const { raw } = await fetchRawById(ctx, platform, id, refresh);
     const min = toMinimal(platform, id, raw);
@@ -2097,8 +2173,8 @@ async function hybridService(route, request, ctx) {
       play: min.type === "video" ? proxyLink(request, ctx, platform, id, "nwm") : null
     });
     let data = minimal ? min : raw;
-    if (minimal && proxy) data = rewriteMinimalToProxy(data, request, ctx);
-    return jsonResponse(data, { router: "hybrid/video_data", params: { url: target, minimal, proxy } });
+    if (minimal && proxy) data = rewriteMinimalToProxy(data, request, ctx, linkTtl);
+    return jsonResponse(data, { router: "hybrid/video_data", params: { url: target, minimal, proxy, guest } });
   }
   if (request.method === "POST" && route === "update_cookie") {
     throw new HTTPException(501, {
@@ -2155,7 +2231,7 @@ async function proxyService(request, ctx) {
     throw new HTTPException(400, { message: "platform must be douyin or tiktok" });
   }
   if (!id) throw new HTTPException(400, { message: "Missing query param: id" });
-  requireAuth(request, ctx, "proxy", platform, id);
+  requireProxyAuth(request, ctx, platform, id);
   const refresh = ["1", "true", "yes"].includes(String(url.searchParams.get("refresh")).toLowerCase());
   const download = ["1", "true", "yes"].includes(String(url.searchParams.get("download")).toLowerCase());
   const bucket = ctx.config.mediaR2;
@@ -2241,9 +2317,10 @@ async function adminRecentService(request, ctx) {
   if ((url.searchParams.get("token") || "") !== ctx.config.auth.token) {
     throw new HTTPException(401, { message: "token required" });
   }
-  const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 60));
-  const rows = await recentQueries(ctx, limit);
-  return rawJsonResponse({ code: 200, count: rows.length, data: rows });
+  const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 10));
+  const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
+  const { rows, total } = await recentQueries(ctx, limit, (page - 1) * limit);
+  return rawJsonResponse({ code: 200, page, limit, total, pages: Math.ceil(total / limit) || 1, count: rows.length, data: rows });
 }
 async function adminPageService(request, ctx) {
   return new Response(ADMIN_HTML, {
@@ -2287,6 +2364,10 @@ input:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
 .row{margin-top:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-family:var(--mono);font-size:11px;color:var(--faint)}
 .row a{color:var(--muted);text-decoration:none}
 .row a:hover{color:var(--teal)}
+.pager{display:flex;gap:10px;align-items:center;justify-content:center;margin-top:20px;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.pager button{font-family:var(--mono);font-size:12px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--ink);padding:8px 14px;border-radius:8px}
+.pager button:hover:not(:disabled){border-color:var(--teal);color:var(--teal)}
+.pager button:disabled{opacity:.35;cursor:default}
 footer{margin-top:30px;font-family:var(--mono);font-size:11px;color:var(--faint)}
 footer a{color:var(--muted)}
 </style>
@@ -2302,28 +2383,38 @@ footer a{color:var(--muted)}
   </div>
   <p id=status class=status>\u8F93\u5165\u94A5\u5319\u540E\u81EA\u52A8\u52A0\u8F7D</p>
   <div id=grid class=grid></div>
-  <footer>\u81EA\u6258\u7BA1\u4E8E RandallFlare \xB7 \u6700\u8FD1 60 \u6761 \xB7 \u91CD\u590D\u89E3\u6790\u5408\u5E76\u8BA1\u6B21</footer>
+  <div id=pager class=pager></div>
+  <footer>\u81EA\u6258\u7BA1\u4E8E RandallFlare \xB7 \u6BCF\u9875 10 \u6761 \xB7 \u91CD\u590D\u89E3\u6790\u5408\u5E76\u8BA1\u6B21</footer>
 </main>
 <script>
 (function(){
   var $=function(s){return document.querySelector(s)}
   var KEY='dt_key'
-  var keyInput=$('#key'),statusEl=$('#status'),grid=$('#grid')
+  var keyInput=$('#key'),statusEl=$('#status'),grid=$('#grid'),pager=$('#pager')
   try{var k=localStorage.getItem(KEY);if(k)keyInput.value=k}catch(e){}
   function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
   function ago(ms){var s=Math.floor((Date.now()-ms)/1000);if(s<60)return s+'\u79D2\u524D';if(s<3600)return Math.floor(s/60)+'\u5206\u524D';if(s<86400)return Math.floor(s/3600)+'\u65F6\u524D';return Math.floor(s/86400)+'\u5929\u524D'}
-  async function load(){
+  async function load(page){
+    page=page||1
     var key=(keyInput.value||'').trim()
     if(!key){statusEl.textContent='\u5148\u586B\u8BBF\u95EE\u94A5\u5319';return}
     try{localStorage.setItem(KEY,key)}catch(e){}
-    statusEl.textContent='\u52A0\u8F7D\u4E2D\u2026';grid.innerHTML=''
+    statusEl.textContent='\u52A0\u8F7D\u4E2D\u2026';grid.innerHTML='';pager.innerHTML=''
     try{
-      var r=await fetch('/api/admin/recent?limit=60&token='+encodeURIComponent(key))
+      var r=await fetch('/api/admin/recent?limit=10&page='+page+'&token='+encodeURIComponent(key))
       if(r.status!==200){statusEl.textContent='\u52A0\u8F7D\u5931\u8D25 HTTP '+r.status;return}
       var j=await r.json();var rows=j.data||[]
-      statusEl.textContent=rows.length?('\u5171 '+j.count+' \u6761'):'\u8FD8\u6CA1\u6709\u67E5\u8BE2\u8BB0\u5F55'
+      statusEl.textContent=j.total?('\u5171 '+j.total+' \u6761 \xB7 \u7B2C '+j.page+'/'+j.pages+' \u9875'):'\u8FD8\u6CA1\u6709\u67E5\u8BE2\u8BB0\u5F55'
       rows.forEach(function(row){grid.appendChild(card(row))})
+      renderPager(j.page,j.pages)
     }catch(e){statusEl.textContent='\u7F51\u7EDC\u9519\u8BEF\uFF1A'+e.message}
+  }
+  function renderPager(page,pages){
+    if(!pages||pages<=1)return
+    var prev=el('button',null,'\u2190 \u4E0A\u4E00\u9875');prev.disabled=page<=1;prev.addEventListener('click',function(){load(page-1)})
+    var info=el('span',null,page+' / '+pages)
+    var next=el('button',null,'\u4E0B\u4E00\u9875 \u2192');next.disabled=page>=pages;next.addEventListener('click',function(){load(page+1)})
+    pager.appendChild(prev);pager.appendChild(info);pager.appendChild(next)
   }
   function card(row){
     var it=el('div','item')
@@ -2341,9 +2432,9 @@ footer a{color:var(--muted)}
     it.appendChild(info)
     return it
   }
-  $('#refresh').addEventListener('click',load)
-  keyInput.addEventListener('keydown',function(e){if(e.key==='Enter')load()})
-  if(keyInput.value)load()
+  $('#refresh').addEventListener('click',function(){load(1)})
+  keyInput.addEventListener('keydown',function(e){if(e.key==='Enter')load(1)})
+  if(keyInput.value)load(1)
 })();
 </script>
 </body>
@@ -2467,8 +2558,8 @@ footer a{color:var(--muted)}
 
   <div class=keybar>
     <label for=key>\u8BBF\u95EE\u94A5\u5319</label>
-    <input id=key type=password autocomplete=off spellcheck=false placeholder="\u4F60\u7684 API Token">
-    <span class=hint>\u53EA\u5B58\u5728\u672C\u673A</span>
+    <input id=key type=password autocomplete=off spellcheck=false placeholder="\u7559\u7A7A = \u6E38\u5BA2\u6A21\u5F0F\uFF08\u4E34\u65F6\u94FE\u63A5\uFF09">
+    <span class=hint>\u586B\u4E86\u5F97\u6C38\u4E45\u94FE\u63A5 + \u539F\u59CB\u6570\u636E</span>
   </div>
 
   <div class=slot>
@@ -2496,20 +2587,24 @@ footer a{color:var(--muted)}
   function fmt(n){n=Number(n)||0;return n>=10000?(n/10000).toFixed(1)+'w':String(n)}
 
   var inflight=0
+  var lastGuest=false
   async function parse(text){
     var url=extractUrl(text)
     if(!url){setStatus('\u6CA1\u627E\u5230\u94FE\u63A5\uFF0C\u786E\u8BA4\u7C98\u7684\u662F\u5206\u4EAB\u53E3\u4EE4','warn');return}
     var key=(keyInput.value||'').trim()
-    if(!key){setStatus('\u5148\u586B\u8BBF\u95EE\u94A5\u5319','warn');keyInput.focus();return}
+    lastGuest=!key
     var my=++inflight
-    setStatus('\u89E3\u7801\u4E2D\u2026','load');out.innerHTML=''
+    setStatus(key?'\u89E3\u7801\u4E2D\u2026':'\u89E3\u7801\u4E2D\u2026\uFF08\u6E38\u5BA2\u6A21\u5F0F\uFF09','load');out.innerHTML=''
     try{
-      var api='/api/hybrid/video_data?minimal=true&proxy=1&token='+encodeURIComponent(key)+'&url='+encodeURIComponent(url)
+      var api='/api/hybrid/video_data?minimal=true&proxy=1&url='+encodeURIComponent(url)
+      if(key)api+='&token='+encodeURIComponent(key)
       var r=await fetch(api)
       var j=await r.json()
       if(my!==inflight)return
+      if(r.status===429){setStatus((j&&j.message)||'\u6E38\u5BA2\u6B21\u6570\u5DF2\u8FBE\u4E0A\u9650\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5\u6216\u586B\u5165\u8BBF\u95EE\u94A5\u5319','warn');return}
       if(r.status!==200){setStatus('\u5931\u8D25\uFF1A'+((j&&j.message)||('HTTP '+r.status)),'err');return}
-      render(j.data);setStatus('\u5DF2\u89E3\u7801 \xB7 '+(j.data&&j.data.platform||''),'ok')
+      render(j.data)
+      setStatus((key?'\u5DF2\u89E3\u7801':'\u5DF2\u89E3\u7801\uFF08\u6E38\u5BA2 \xB7 \u94FE\u63A5\u4E34\u65F6\u6709\u6548\uFF09')+' \xB7 '+(j.data&&j.data.platform||''),'ok')
     }catch(e){if(my===inflight)setStatus('\u7F51\u7EDC\u9519\u8BEF\uFF1A'+e.message,'err')}
   }
 
@@ -2556,9 +2651,11 @@ footer a{color:var(--muted)}
     if(d.type==='image'&&d.image_data){
       (d.image_data.no_watermark_image_list||[]).forEach(function(u,i){acts.appendChild(dlBtn(u,'\u56FE'+(i+1)))})
     }
-    var raw=el('button','btn ghost','\u539F\u59CB JSON')
-    raw.addEventListener('click',function(){var p=$('#raw');if(!p){p=el('pre');p.id='raw';out.appendChild(p)}p.textContent=JSON.stringify(d,null,2)})
-    acts.appendChild(raw)
+    if(!lastGuest){
+      var raw=el('button','btn ghost','\u539F\u59CB JSON')
+      raw.addEventListener('click',function(){var p=$('#raw');if(!p){p=el('pre');p.id='raw';out.appendChild(p)}p.textContent=JSON.stringify(d,null,2)})
+      acts.appendChild(raw)
+    }
     meta.appendChild(acts)
     card.appendChild(meta)
     out.appendChild(card)
@@ -2753,6 +2850,17 @@ function buildConfig(env) {
       // Metadata JSON freshness in seconds (default 1h). ?refresh=1
       // on a request bypasses + repopulates.
       metaTtl: toNumber(env.META_CACHE_TTL, 3600)
+    },
+    // Guest mode: unauthenticated callers can parse (hybrid/video_data)
+    // and get TEMPORARY proxied download links, but never raw JSON, the
+    // raw per-platform endpoints, or /admin. Rate-limited per IP via D1
+    // (so guest access requires a D1 binding — without one we can't
+    // enforce limits and guests are refused). Default on.
+    guest: {
+      enabled: !["0", "false", "no", "off"].includes(String(env.GUEST_ENABLED ?? "").toLowerCase()),
+      limit: toNumber(env.GUEST_RATE_LIMIT, 20),
+      windowSec: toNumber(env.GUEST_RATE_WINDOW, 3600),
+      linkTtlSec: toNumber(env.GUEST_LINK_TTL, 7200)
     },
     log: {
       level: env.LOG_LEVEL || "info"

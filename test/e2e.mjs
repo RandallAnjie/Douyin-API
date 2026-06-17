@@ -5,7 +5,9 @@
 import worker from '../src/worker.js'
 import { sign, canonical } from '../src/utils/auth.js'
 
-const env = { DOUYIN_API_TOKEN: 'secret123', DOUYIN_COOKIE: '', TIKTOK_COOKIE: '' }
+// GUEST_ENABLED=0 so the no-token hybrid check is a deterministic 401
+// (guest mode needs a D1 binding the harness doesn't have).
+const env = { DOUYIN_API_TOKEN: 'secret123', DOUYIN_COOKIE: '', TIKTOK_COOKIE: '', GUEST_ENABLED: '0' }
 const ctx = { waitUntil () {} }
 const call = (url, init) => worker.fetch(new Request(url, init), env, ctx)
 

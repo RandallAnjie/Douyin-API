@@ -8,7 +8,7 @@
 // stream to the client and populate R2. Range is supported for video
 // scrubbing.
 import { HTTPException } from '../utils/http-exception.js'
-import { requireAuth } from '../utils/auth.js'
+import { requireProxyAuth } from '../utils/auth.js'
 import { fetchRawById, toMinimal, resolveKindUrl } from '../hybrid/crawler.js'
 import { serveFromR2, teeIntoCache, cachePopulateAside, r2PutRetry, mediaKey } from '../utils/r2cache.js'
 
@@ -32,7 +32,7 @@ export async function proxyService (request, ctx) {
     throw new HTTPException(400, { message: 'platform must be douyin or tiktok' })
   }
   if (!id) throw new HTTPException(400, { message: 'Missing query param: id' })
-  requireAuth(request, ctx, 'proxy', platform, id)
+  requireProxyAuth(request, ctx, platform, id)
 
   const refresh = ['1', 'true', 'yes'].includes(String(url.searchParams.get('refresh')).toLowerCase())
   const download = ['1', 'true', 'yes'].includes(String(url.searchParams.get('download')).toLowerCase())
