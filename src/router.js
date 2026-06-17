@@ -18,6 +18,7 @@ import { discoverPageService, discoverApiService } from './service/discover.js'
 import { workPageService, workApiService } from './service/work.js'
 import { commentsApiService } from './service/comments.js'
 import { searchPageService, searchApiService } from './service/search.js'
+import { authorPageService, authorApiService } from './service/author.js'
 import appService from './service/app.js'
 import docsService from './service/docs.js'
 import { HTTPException } from './utils/http-exception.js'
@@ -64,6 +65,12 @@ export async function router (request, ctx) {
   }
   if (pathname === '/api/search' && request.method === 'GET') {
     return searchApiService(request, ctx)
+  }
+  if (pathname === '/author' && request.method === 'GET') {
+    return authorPageService(request, ctx)
+  }
+  if (pathname === '/api/author' && request.method === 'GET') {
+    return authorApiService(request, ctx)
   }
   if (pathname === '/api/admin/recent' && request.method === 'GET') {
     return adminRecentService(request, ctx)

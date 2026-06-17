@@ -142,7 +142,8 @@ svg{width:100%;height:auto;display:block}
     var ab=el('div','author')
     if(au.avatar){var av=el('img');av.src=au.avatar;ab.appendChild(av)}
     var ai=el('div')
-    ai.appendChild(el('div','nm',(au.name||w.author||'未知作者')))
+    if(w.author_id){var na=el('a','nm',(au.name||w.author||'未知作者'));na.href='/author?platform='+encodeURIComponent(w.platform)+'&id='+encodeURIComponent(w.author_id);na.style.color='var(--ink)';na.style.textDecoration='none';ai.appendChild(na)}
+    else ai.appendChild(el('div','nm',(au.name||w.author||'未知作者')))
     if(aex.follower!=null)ai.appendChild(el('div','fo','粉丝 '+fmt(aex.follower)))
     ab.appendChild(ai);meta.appendChild(ab)
     var facts=el('div','facts')
