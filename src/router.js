@@ -15,6 +15,7 @@ import { hybridService, downloadService } from './service/hybrid.js'
 import { proxyService } from './service/proxy.js'
 import { adminPageService, adminRecentService } from './service/admin.js'
 import { discoverPageService, discoverApiService } from './service/discover.js'
+import { workPageService, workApiService } from './service/work.js'
 import appService from './service/app.js'
 import docsService from './service/docs.js'
 import { HTTPException } from './utils/http-exception.js'
@@ -46,6 +47,12 @@ export async function router (request, ctx) {
   }
   if (pathname === '/api/discover' && request.method === 'GET') {
     return discoverApiService(request, ctx)
+  }
+  if (pathname === '/work' && request.method === 'GET') {
+    return workPageService(request, ctx)
+  }
+  if (pathname === '/api/work' && request.method === 'GET') {
+    return workApiService(request, ctx)
   }
   if (pathname === '/api/admin/recent' && request.method === 'GET') {
     return adminRecentService(request, ctx)

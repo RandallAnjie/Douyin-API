@@ -50,11 +50,26 @@ export async function hybridService (route, request, ctx) {
 
     // Log to the D1 query history (best-effort). Store permanent proxied
     // cover/play links so /admin can render them directly.
+    const a = min.author || {}
+    const s = min.statistics || {}
     await logQuery(ctx, {
       platform,
       video_id: id,
       type: min.type,
-      author: (min.author && min.author.nickname) || null,
+      author: a.nickname || null,
+      authorInfo: (a.sec_uid || a.uid)
+        ? {
+            id: a.sec_uid || String(a.uid),
+            name: a.nickname || null,
+            avatar: proxyLink(request, ctx, platform, id, 'avatar'),
+            extra: { follower: a.follower_count, signature: a.signature, uid: a.uid, sec_uid: a.sec_uid }
+          }
+        : null,
+      create_time: min.create_time || null,
+      stats: {
+        play: s.play_count, digg: s.digg_count, comment: s.comment_count,
+        share: s.share_count, collect: s.collect_count
+      },
       description: min.desc || null,
       original_url: target,
       cover: proxyLink(request, ctx, platform, id, 'cover'),

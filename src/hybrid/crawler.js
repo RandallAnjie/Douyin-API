@@ -163,6 +163,9 @@ export function mediaCandidates (platform, raw, kind) {
     push(video.origin_cover?.url_list)
     if (platform === 'douyin') push(raw.images?.[0]?.url_list)
     else push(raw.image_post_info?.images?.[0]?.display_image?.url_list)
+  } else if (kind === 'avatar') {
+    push(raw.author?.avatar_larger?.url_list)
+    push(raw.author?.avatar_thumb?.url_list)
   } else if (/^image(wm)?\d+$/.test(kind)) {
     const wm = kind.startsWith('imagewm')
     const idx = Number(kind.replace(/^image(wm)?/, ''))
