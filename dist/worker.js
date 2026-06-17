@@ -1299,16 +1299,15 @@ async function r2PutRetry(bucket, key, makeBody, opts, tries = 4) {
   }
   return false;
 }
-function putJson(bucket, ctx, key, obj) {
-  if (!bucket) return;
+function putJson(bucket, key, obj) {
+  if (!bucket) return Promise.resolve(false);
   const json = JSON.stringify(obj);
-  const put = r2PutRetry(
+  return r2PutRetry(
     bucket,
     key,
     () => new Response(json).body,
     { httpMetadata: { contentType: "application/json; charset=utf-8" } }
   );
-  if (ctx?.waitUntil) ctx.waitUntil(put);
 }
 
 // src/tiktok/app/crawler.js
@@ -1355,7 +1354,7 @@ async function fetchDouyinDetailCached(ctx, awemeId, refresh = false) {
     if (cached) return { data: cached, cached: true };
   }
   const data = await fetchOneVideo(ctx, awemeId);
-  putJson(bucket, ctx, key, data);
+  await putJson(bucket, key, data);
   return { data, cached: false };
 }
 async function fetchTiktokAwemeCached(ctx, awemeId, refresh = false) {
@@ -1366,7 +1365,7 @@ async function fetchTiktokAwemeCached(ctx, awemeId, refresh = false) {
     if (cached) return { data: cached, cached: true };
   }
   const data = await fetchOneVideo2(ctx, awemeId);
-  putJson(bucket, ctx, key, data);
+  await putJson(bucket, key, data);
   return { data, cached: false };
 }
 

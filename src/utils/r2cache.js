@@ -154,15 +154,16 @@ export async function r2PutRetry (bucket, key, makeBody, opts, tries = 4) {
   return false
 }
 
-// Put a JSON object (stream body + retry). Scheduled via waitUntil so it
-// doesn't block the response.
-export function putJson (bucket, ctx, key, obj) {
-  if (!bucket) return
+// Put a JSON object (stream body + retry). Returns the put promise so
+// callers can AWAIT it — the plane PUT 502s intermittently and the
+// retry loop must run inside the live request, since waitUntil can be
+// reclaimed before all attempts finish. Only runs on a cache miss.
+export function putJson (bucket, key, obj) {
+  if (!bucket) return Promise.resolve(false)
   const json = JSON.stringify(obj)
-  const put = r2PutRetry(
+  return r2PutRetry(
     bucket, key,
     () => new Response(json).body,
     { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
   )
-  if (ctx?.waitUntil) ctx.waitUntil(put)
 }
