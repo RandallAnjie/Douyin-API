@@ -58,7 +58,9 @@ export async function hybridService (route, request, ctx) {
       description: min.desc || null,
       original_url: target,
       cover: proxyLink(request, ctx, platform, id, 'cover'),
-      play: min.type === 'video' ? proxyLink(request, ctx, platform, id, 'nwm') : null
+      play: min.type === 'video' ? proxyLink(request, ctx, platform, id, 'nwm') : null,
+      duration: raw.duration ? Math.round(raw.duration / 1000) : null,
+      extra: { stats: min.statistics || null }
     })
 
     let data = minimal ? min : raw
