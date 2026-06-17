@@ -1328,11 +1328,11 @@ async function r2PutRetry(bucket, key, makeBody, opts, tries = 4) {
 }
 function putJson(bucket, ctx, key, obj) {
   if (!bucket) return;
-  const json = JSON.stringify(obj);
+  const json2 = JSON.stringify(obj);
   const p = r2PutRetry(
     bucket,
     key,
-    () => new Response(json).body,
+    () => new Response(json2).body,
     { httpMetadata: { contentType: "application/json; charset=utf-8" } },
     2
   );
@@ -2274,6 +2274,17 @@ function searchQueries(ctx, q3, platform, limit = 12, offset = 0) {
   if (platform) return pageQueries(ctx, "WHERE platform = ? AND (description LIKE ? OR author LIKE ? OR tags LIKE ?)", [platform, like, like, like], "hits DESC, updated_at DESC", limit, offset);
   return pageQueries(ctx, "WHERE description LIKE ? OR author LIKE ? OR tags LIKE ?", [like, like, like], "hits DESC, updated_at DESC", limit, offset);
 }
+async function staleQueries(ctx, limit = 15) {
+  const db = ctx.config.d1;
+  if (!db) return [];
+  try {
+    await ensureSchema(db);
+    const r = await db.prepare(`SELECT platform, video_id, original_url FROM queries ORDER BY updated_at ASC LIMIT ?`).bind(limit).all();
+    return r?.results || [];
+  } catch {
+    return [];
+  }
+}
 async function getWork(ctx, platform, videoId) {
   const db = ctx.config.d1;
   if (!db) return null;
@@ -2416,6 +2427,46 @@ async function rateLimitD1(db, ip, limit, windowSec) {
   }
 }
 
+// src/utils/ingest.js
+async function ingestWork(ctx, request, platform, id, target, refresh = false) {
+  const { raw, cached } = await fetchRawById(ctx, platform, id, refresh);
+  const min = toMinimal(platform, id, raw);
+  const a = min.author || {};
+  const s = min.statistics || {};
+  await logQuery(ctx, {
+    platform,
+    video_id: id,
+    type: min.type,
+    author: a.nickname || null,
+    authorInfo: a.sec_uid || a.uid ? {
+      id: a.sec_uid || String(a.uid),
+      name: a.nickname || null,
+      avatar: proxyLink(request, ctx, platform, id, "avatar"),
+      extra: { follower: a.follower_count, signature: a.signature, uid: a.uid, sec_uid: a.sec_uid }
+    } : null,
+    create_time: min.create_time || null,
+    stats: {
+      play: s.play_count,
+      digg: s.digg_count,
+      comment: s.comment_count,
+      share: s.share_count,
+      collect: s.collect_count
+    },
+    tags: Array.isArray(raw.text_extra) ? raw.text_extra.map((t) => t.hashtag_name).filter(Boolean) : null,
+    music: raw.music ? { id: raw.music.id, title: raw.music.title, author: raw.music.author } : null,
+    description: min.desc || null,
+    original_url: target,
+    cover: proxyLink(request, ctx, platform, id, "cover"),
+    play: min.type === "video" ? proxyLink(request, ctx, platform, id, "nwm") : null,
+    duration: raw.duration ? Math.round(raw.duration / 1e3) : null,
+    extra: {
+      stats: min.statistics || null,
+      images: min.type === "image" && min.image_data ? min.image_data.no_watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `image${i}`)) : void 0
+    }
+  });
+  return { raw, min, cached };
+}
+
 // src/utils/comments.js
 var TTL = 6 * 3600 * 1e3;
 function normalize(resp) {
@@ -2485,43 +2536,7 @@ async function hybridService(route, request, ctx) {
     const refresh = guest ? false : truthy2(url.searchParams.get("refresh") ?? "false");
     const linkTtl = guest ? ctx.config.guest.linkTtlSec : void 0;
     const { platform, id } = await resolvePlatformId(target);
-    const { raw } = await fetchRawById(ctx, platform, id, refresh);
-    const min = toMinimal(platform, id, raw);
-    const a = min.author || {};
-    const s = min.statistics || {};
-    await logQuery(ctx, {
-      platform,
-      video_id: id,
-      type: min.type,
-      author: a.nickname || null,
-      authorInfo: a.sec_uid || a.uid ? {
-        id: a.sec_uid || String(a.uid),
-        name: a.nickname || null,
-        avatar: proxyLink(request, ctx, platform, id, "avatar"),
-        extra: { follower: a.follower_count, signature: a.signature, uid: a.uid, sec_uid: a.sec_uid }
-      } : null,
-      create_time: min.create_time || null,
-      stats: {
-        play: s.play_count,
-        digg: s.digg_count,
-        comment: s.comment_count,
-        share: s.share_count,
-        collect: s.collect_count
-      },
-      tags: Array.isArray(raw.text_extra) ? raw.text_extra.map((t) => t.hashtag_name).filter(Boolean) : null,
-      music: raw.music ? { id: raw.music.id, title: raw.music.title, author: raw.music.author } : null,
-      description: min.desc || null,
-      original_url: target,
-      cover: proxyLink(request, ctx, platform, id, "cover"),
-      play: min.type === "video" ? proxyLink(request, ctx, platform, id, "nwm") : null,
-      duration: raw.duration ? Math.round(raw.duration / 1e3) : null,
-      extra: {
-        stats: min.statistics || null,
-        // For image posts, store the cached proxy image links so the
-        // discover lightbox can show them with zero extra requests.
-        images: min.type === "image" && min.image_data ? min.image_data.no_watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `image${i}`)) : void 0
-      }
-    });
+    const { raw, min } = await ingestWork(ctx, request, platform, id, target, refresh);
     if (ctx.waitUntil) ctx.waitUntil(maybeFetchComments(ctx, platform, id));
     let data = minimal ? min : raw;
     if (minimal && proxy) data = rewriteMinimalToProxy(data, request, ctx, linkTtl);
@@ -3485,6 +3500,50 @@ h2{font-size:15px;margin:30px 0 12px;font-family:var(--serif);letter-spacing:.04
 </body>
 </html>`;
 
+// src/service/cron.js
+var THROTTLE_MS = 50 * 1e3;
+var REFRESH_BATCH = 8;
+async function cronService(request, ctx) {
+  const expr = request.headers.get("x-edge-cron-expression") || "default";
+  const last = await metaGet(ctx, `cron:last:${expr}`);
+  const now = Date.now();
+  if (last && now - last.ts < THROTTLE_MS) {
+    return json({ code: 200, skipped: "throttled", expr });
+  }
+  await metaSet(ctx, `cron:last:${expr}`, now);
+  if (!ctx.config.d1) {
+    return json({ code: 200, skipped: "no-d1", expr });
+  }
+  const run = (async () => {
+    const stale = await staleQueries(ctx, REFRESH_BATCH);
+    let ok = 0;
+    const errors = [];
+    for (const w of stale) {
+      try {
+        await ingestWork(ctx, request, w.platform, w.video_id, w.original_url, true);
+        await maybeFetchComments(ctx, w.platform, w.video_id);
+        ok++;
+      } catch (e) {
+        errors.push(`${w.platform}:${w.video_id} ${e?.message || e}`);
+      }
+    }
+    await metaSet(ctx, `cron:stats:${expr}`, now);
+    return { refreshed: ok, attempted: stale.length, errors: errors.slice(0, 5) };
+  })();
+  if (ctx.waitUntil) {
+    ctx.waitUntil(run);
+    return json({ code: 200, expr, started: true, batch: REFRESH_BATCH });
+  }
+  const result = await run;
+  return json({ code: 200, expr, ...result });
+}
+function json(obj) {
+  return new Response(JSON.stringify(obj), {
+    status: 200,
+    headers: { "content-type": "application/json; charset=utf-8" }
+  });
+}
+
 // src/service/app.js
 async function appService(request, ctx) {
   return new Response(PAGE5, {
@@ -3824,6 +3883,9 @@ async function router(request, ctx) {
   if (pathname === "") pathname = "/";
   if (pathname === "/favicon.ico") {
     return new Response(null, { status: 204 });
+  }
+  if (pathname === "/__edge_cron" && request.method === "POST") {
+    return cronService(request, ctx);
   }
   if (pathname === "/" && request.method === "GET") {
     return appService(request, ctx);

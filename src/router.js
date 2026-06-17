@@ -19,6 +19,7 @@ import { workPageService, workApiService } from './service/work.js'
 import { commentsApiService } from './service/comments.js'
 import { searchPageService, searchApiService } from './service/search.js'
 import { authorPageService, authorApiService } from './service/author.js'
+import { cronService } from './service/cron.js'
 import appService from './service/app.js'
 import docsService from './service/docs.js'
 import { HTTPException } from './utils/http-exception.js'
@@ -35,6 +36,9 @@ export async function router (request, ctx) {
 
   if (pathname === '/favicon.ico') {
     return new Response(null, { status: 204 })
+  }
+  if (pathname === '/__edge_cron' && request.method === 'POST') {
+    return cronService(request, ctx)
   }
   if (pathname === '/' && request.method === 'GET') {
     return appService(request, ctx)
