@@ -2504,18 +2504,17 @@ body{
 h1{font-family:var(--serif);font-weight:600;font-size:clamp(40px,11vw,76px);line-height:.95;margin:0;letter-spacing:.04em}
 .sub{color:var(--muted);margin:14px 0 0;font-size:15px}
 
-/* key bar */
-.keybar{display:flex;align-items:center;gap:10px;margin:26px 0 22px;flex-wrap:wrap}
-.keybar label{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
-.keybar input{
-  flex:1;min-width:180px;background:var(--panel);border:1px solid var(--line);color:var(--ink);
-  font-family:var(--mono);font-size:13px;padding:11px 13px;border-radius:9px;letter-spacing:.04em;
-}
-.keybar .hint{font-family:var(--mono);font-size:11px;color:var(--faint)}
+/* key (collapsed) */
+.keyrow{display:flex;justify-content:flex-end;margin:20px 0 0}
+.keylink{background:transparent;border:0;color:var(--faint);font-family:var(--mono);font-size:11px;letter-spacing:.22em;cursor:pointer;padding:4px 2px}
+.keylink:hover{color:var(--teal)}
+.keywrap{margin:10px 0 0}
+.keywrap.hidden{display:none}
+.keywrap input{width:100%;background:var(--panel);border:1px solid var(--line);color:var(--ink);font-family:var(--mono);font-size:13px;padding:11px 13px;border-radius:9px;letter-spacing:.04em}
 input:focus-visible,textarea:focus-visible{outline:2px solid var(--teal);outline-offset:1px;border-color:transparent}
 
 /* drop slot \u2014 the signature */
-.slot{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:0;overflow:hidden}
+.slot{position:relative;margin-top:14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:0;overflow:hidden}
 .slot::before{
   content:"\u53E3\u4EE4\u6295\u9012\u53E3";position:absolute;top:0;left:0;right:0;height:34px;line-height:34px;padding:0 14px;
   font-family:var(--mono);font-size:11px;letter-spacing:.22em;color:var(--muted);
@@ -2581,10 +2580,11 @@ footer a{color:var(--muted)}
   <h1>\u89E3\u6790\u53F0</h1>
   <p class=sub>\u7C98\u8D34\u6296\u97F3 / TikTok \u5206\u4EAB\u53E3\u4EE4\uFF0C\u81EA\u52A8\u53D6\u56DE\u65E0\u6C34\u5370\u89C6\u9891\u4E0E\u56FE\u96C6\u3002</p>
 
-  <div class=keybar>
-    <label for=key>\u8BBF\u95EE\u94A5\u5319</label>
-    <input id=key type=password autocomplete=off spellcheck=false placeholder="\u53EF\u7559\u7A7A">
-    <span class=hint>\u6E38\u5BA2\u9650\u6B21</span>
+  <div class=keyrow>
+    <button id=keytoggle type=button class=keylink>\u94A5\u5319</button>
+  </div>
+  <div id=keywrap class=keywrap hidden>
+    <input id=key type=password autocomplete=off spellcheck=false placeholder="\u8BBF\u95EE\u94A5\u5319">
   </div>
 
   <div class=slot>
@@ -2603,8 +2603,10 @@ footer a{color:var(--muted)}
   var $=function(s){return document.querySelector(s)}
   var KEY='dt_key'
   var keyInput=$('#key'),pasteBox=$('#paste'),statusEl=$('#status'),out=$('#out'),goBtn=$('#go')
-  try{var k=localStorage.getItem(KEY);if(k)keyInput.value=k}catch(e){}
+  var keytoggle=$('#keytoggle'),keywrap=$('#keywrap')
+  try{var k=localStorage.getItem(KEY);if(k){keyInput.value=k;keywrap.classList.remove('hidden')}}catch(e){}
   keyInput.addEventListener('input',function(){try{localStorage.setItem(KEY,keyInput.value)}catch(e){}})
+  keytoggle.addEventListener('click',function(){keywrap.classList.toggle('hidden');if(!keywrap.classList.contains('hidden'))keyInput.focus()})
 
   function extractUrl(t){var m=String(t||'').match(/https?:\\/\\/[^\\s]+/);return m?m[0]:''}
   function setStatus(s,kind){statusEl.textContent=s;statusEl.className='status'+(kind?' '+kind:'')}

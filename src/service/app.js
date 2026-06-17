@@ -45,18 +45,17 @@ body{
 h1{font-family:var(--serif);font-weight:600;font-size:clamp(40px,11vw,76px);line-height:.95;margin:0;letter-spacing:.04em}
 .sub{color:var(--muted);margin:14px 0 0;font-size:15px}
 
-/* key bar */
-.keybar{display:flex;align-items:center;gap:10px;margin:26px 0 22px;flex-wrap:wrap}
-.keybar label{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
-.keybar input{
-  flex:1;min-width:180px;background:var(--panel);border:1px solid var(--line);color:var(--ink);
-  font-family:var(--mono);font-size:13px;padding:11px 13px;border-radius:9px;letter-spacing:.04em;
-}
-.keybar .hint{font-family:var(--mono);font-size:11px;color:var(--faint)}
+/* key (collapsed) */
+.keyrow{display:flex;justify-content:flex-end;margin:20px 0 0}
+.keylink{background:transparent;border:0;color:var(--faint);font-family:var(--mono);font-size:11px;letter-spacing:.22em;cursor:pointer;padding:4px 2px}
+.keylink:hover{color:var(--teal)}
+.keywrap{margin:10px 0 0}
+.keywrap.hidden{display:none}
+.keywrap input{width:100%;background:var(--panel);border:1px solid var(--line);color:var(--ink);font-family:var(--mono);font-size:13px;padding:11px 13px;border-radius:9px;letter-spacing:.04em}
 input:focus-visible,textarea:focus-visible{outline:2px solid var(--teal);outline-offset:1px;border-color:transparent}
 
 /* drop slot — the signature */
-.slot{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:0;overflow:hidden}
+.slot{position:relative;margin-top:14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:0;overflow:hidden}
 .slot::before{
   content:"口令投递口";position:absolute;top:0;left:0;right:0;height:34px;line-height:34px;padding:0 14px;
   font-family:var(--mono);font-size:11px;letter-spacing:.22em;color:var(--muted);
@@ -122,10 +121,11 @@ footer a{color:var(--muted)}
   <h1>解析台</h1>
   <p class=sub>粘贴抖音 / TikTok 分享口令，自动取回无水印视频与图集。</p>
 
-  <div class=keybar>
-    <label for=key>访问钥匙</label>
-    <input id=key type=password autocomplete=off spellcheck=false placeholder="可留空">
-    <span class=hint>游客限次</span>
+  <div class=keyrow>
+    <button id=keytoggle type=button class=keylink>钥匙</button>
+  </div>
+  <div id=keywrap class=keywrap hidden>
+    <input id=key type=password autocomplete=off spellcheck=false placeholder="访问钥匙">
   </div>
 
   <div class=slot>
@@ -144,8 +144,10 @@ footer a{color:var(--muted)}
   var $=function(s){return document.querySelector(s)}
   var KEY='dt_key'
   var keyInput=$('#key'),pasteBox=$('#paste'),statusEl=$('#status'),out=$('#out'),goBtn=$('#go')
-  try{var k=localStorage.getItem(KEY);if(k)keyInput.value=k}catch(e){}
+  var keytoggle=$('#keytoggle'),keywrap=$('#keywrap')
+  try{var k=localStorage.getItem(KEY);if(k){keyInput.value=k;keywrap.classList.remove('hidden')}}catch(e){}
   keyInput.addEventListener('input',function(){try{localStorage.setItem(KEY,keyInput.value)}catch(e){}})
+  keytoggle.addEventListener('click',function(){keywrap.classList.toggle('hidden');if(!keywrap.classList.contains('hidden'))keyInput.focus()})
 
   function extractUrl(t){var m=String(t||'').match(/https?:\\/\\/[^\\s]+/);return m?m[0]:''}
   function setStatus(s,kind){statusEl.textContent=s;statusEl.className='status'+(kind?' '+kind:'')}
