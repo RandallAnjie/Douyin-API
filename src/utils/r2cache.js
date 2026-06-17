@@ -116,7 +116,9 @@ export async function cachePopulateAside (bucket, ctx, key, rangeFetcher, fullFe
 // --- JSON metadata helpers ---
 
 // Returns the parsed object if present and fresher than ttlSeconds,
-// else null. Freshness uses R2's `uploaded` timestamp.
+// else null. Freshness uses R2's `uploaded` timestamp. Reads the body
+// via Response() (the same path media reads use) rather than obj.text(),
+// which some R2 shims don't implement.
 export async function getJson (bucket, key, ttlSeconds) {
   if (!bucket || typeof bucket.get !== 'function') return null
   let obj
@@ -126,13 +128,19 @@ export async function getJson (bucket, key, ttlSeconds) {
     const age = (Date.now() - new Date(obj.uploaded).getTime()) / 1000
     if (age > ttlSeconds) return null
   }
-  try { return JSON.parse(await obj.text()) } catch { return null }
+  try {
+    const text = obj.body ? await new Response(obj.body).text() : await obj.text()
+    return JSON.parse(text)
+  } catch { return null }
 }
 
-// Put a JSON object (scheduled via waitUntil; does not block).
+// Put a JSON object. The RandallFlare R2 shim 502s on string/buffer
+// bodies but accepts a ReadableStream (same path the media tee uses),
+// so we wrap the JSON in a Response body. Scheduled via waitUntil; does
+// not block the response.
 export function putJson (bucket, ctx, key, obj) {
   if (!bucket) return
-  const body = JSON.stringify(obj)
+  const body = new Response(JSON.stringify(obj)).body
   const put = bucket.put(key, body, { httpMetadata: { contentType: 'application/json; charset=utf-8' } })
     .catch((e) => { try { console.error('[r2] json put failed', key, e?.message || e) } catch {} })
   if (ctx?.waitUntil) ctx.waitUntil(put)

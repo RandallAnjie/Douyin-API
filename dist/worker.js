@@ -1276,14 +1276,15 @@ async function getJson(bucket, key, ttlSeconds) {
     if (age > ttlSeconds) return null;
   }
   try {
-    return JSON.parse(await obj.text());
+    const text = obj.body ? await new Response(obj.body).text() : await obj.text();
+    return JSON.parse(text);
   } catch {
     return null;
   }
 }
 function putJson(bucket, ctx, key, obj) {
   if (!bucket) return;
-  const body = JSON.stringify(obj);
+  const body = new Response(JSON.stringify(obj)).body;
   const put = bucket.put(key, body, { httpMetadata: { contentType: "application/json; charset=utf-8" } }).catch((e) => {
     try {
       console.error("[r2] json put failed", key, e?.message || e);
@@ -2139,7 +2140,7 @@ async function cacheDebugService(request, ctx) {
   await tryPut("put_str_opts", key, payload, { httpMetadata: { contentType: "application/json" } });
   await tryPut("put_str_plain", "debug_plain.txt", "hello");
   await tryPut("put_ab", "debug_ab.bin", new TextEncoder().encode("hello").buffer);
-  await tryPut("put_root", "_dbg.txt", "x");
+  await tryPut("put_stream", key, new Response(payload).body, { httpMetadata: { contentType: "application/json" } });
   try {
     if (typeof bucket.list === "function") {
       const l = await bucket.list({ limit: 3 });

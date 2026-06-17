@@ -37,7 +37,7 @@ export async function cacheDebugService (request, ctx) {
   await tryPut('put_str_opts', key, payload, { httpMetadata: { contentType: 'application/json' } })
   await tryPut('put_str_plain', 'debug_plain.txt', 'hello')
   await tryPut('put_ab', 'debug_ab.bin', new TextEncoder().encode('hello').buffer)
-  await tryPut('put_root', '_dbg.txt', 'x')
+  await tryPut('put_stream', key, new Response(payload).body, { httpMetadata: { contentType: 'application/json' } })
 
   try {
     if (typeof bucket.list === 'function') {
