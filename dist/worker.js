@@ -1929,7 +1929,7 @@ async function hybridParseSingleVideo(ctx, url, minimal = false, refresh = false
   return toMinimal(platform, id, raw);
 }
 function resolveKindUrl(minimal, kind) {
-  const isImageKind = /^imagewm?\d+$/.test(kind);
+  const isImageKind = /^image(wm)?\d+$/.test(kind);
   if (kind === "nwm" || kind === "wm") {
     const vd = minimal.video_data;
     if (!vd) throw new HTTPException(404, { message: "No video for this resource" });
@@ -1942,7 +1942,7 @@ function resolveKindUrl(minimal, kind) {
   }
   if (isImageKind) {
     const wm = kind.startsWith("imagewm");
-    const idx = Number(kind.replace(/^imagewm?/, ""));
+    const idx = Number(kind.replace(/^image(wm)?/, ""));
     const list = wm ? minimal.image_data?.watermark_image_list : minimal.image_data?.no_watermark_image_list;
     if (!list || !list[idx]) throw new HTTPException(404, { message: `No image at index ${idx}` });
     return { url: list[idx], contentType: "image/jpeg", ext: "jpeg" };
@@ -2219,7 +2219,7 @@ textarea::placeholder{color:var(--faint)}
 .card{display:flex;gap:20px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
 @media(max-width:560px){.card{flex-direction:column}}
 .frame{position:relative;flex:0 0 200px;aspect-ratio:9/16;border-radius:10px;overflow:hidden;background:#0e0d12;border:1px solid var(--line)}
-.frame img{width:100%;height:100%;object-fit:cover;display:block}
+.frame img,.frame video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
 .badge{position:absolute;left:10px;top:10px;font-family:var(--mono);font-size:11px;letter-spacing:.1em;background:rgba(20,18,26,.78);color:var(--teal);padding:3px 8px;border-radius:6px;backdrop-filter:blur(4px)}
 .meta{flex:1;min-width:0;display:flex;flex-direction:column}
 .nick{font-family:var(--serif);font-size:20px;letter-spacing:.02em}
@@ -2236,6 +2236,7 @@ textarea::placeholder{color:var(--faint)}
 .btn.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
 .btn.ghost:hover{border-color:var(--teal);color:var(--teal)}
 .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin-top:14px}
+.gallery a{display:block}
 .gallery img{width:100%;aspect-ratio:.7;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
 pre#raw{margin-top:14px;background:#0f0e13;border:1px solid var(--line);border-radius:10px;padding:14px;overflow:auto;font-family:var(--mono);font-size:11.5px;color:var(--muted);max-height:300px}
 
@@ -2317,7 +2318,15 @@ footer a{color:var(--muted)}
     var card=el('div','card')
     var frame=el('div','frame')
     var cover=d.cover_data&&d.cover_data.cover?d.cover_data.cover:''
-    if(cover){var img=el('img');img.src=cover;img.alt='\u5C01\u9762';img.loading='lazy';frame.appendChild(img)}
+    var firstImg=(d.image_data&&(d.image_data.no_watermark_image_list||[])[0])||''
+    if(d.type==='video'&&d.video_data&&d.video_data.nwm_video_url){
+      var v=el('video');v.controls=true;v.playsInline=true;v.preload='metadata';v.setAttribute('playsinline','')
+      if(cover)v.poster=cover
+      v.src=d.video_data.nwm_video_url
+      frame.appendChild(v)
+    }else{
+      var im0=el('img');im0.src=cover||firstImg;im0.alt='\u9884\u89C8';im0.loading='lazy';frame.appendChild(im0)
+    }
     frame.appendChild(el('span','badge',d.type==='image'?'\u56FE\u96C6':'\u89C6\u9891'))
     card.appendChild(frame)
 
@@ -2346,7 +2355,7 @@ footer a{color:var(--muted)}
 
     if(d.type==='image'&&d.image_data){
       var g=el('div','gallery')
-      ;(d.image_data.no_watermark_image_list||[]).forEach(function(u){var im=el('img');im.src=u;im.loading='lazy';g.appendChild(im)})
+      ;(d.image_data.no_watermark_image_list||[]).forEach(function(u){var a=el('a');a.href=u;a.target='_blank';a.rel='noopener';var im=el('img');im.src=u;im.loading='lazy';a.appendChild(im);g.appendChild(a)})
       out.appendChild(g)
     }
   }

@@ -111,7 +111,7 @@ export async function hybridParseSingleVideo (ctx, url, minimal = false, refresh
 // Pick a concrete CDN URL from a minimal result for a proxy `kind`.
 // kinds: nwm | wm | cover | image<N> | imagewm<N>
 export function resolveKindUrl (minimal, kind) {
-  const isImageKind = /^imagewm?\d+$/.test(kind)
+  const isImageKind = /^image(wm)?\d+$/.test(kind)
   if (kind === 'nwm' || kind === 'wm') {
     const vd = minimal.video_data
     if (!vd) throw new HTTPException(404, { message: 'No video for this resource' })
@@ -126,7 +126,7 @@ export function resolveKindUrl (minimal, kind) {
   }
   if (isImageKind) {
     const wm = kind.startsWith('imagewm')
-    const idx = Number(kind.replace(/^imagewm?/, ''))
+    const idx = Number(kind.replace(/^image(wm)?/, ''))
     const list = wm ? minimal.image_data?.watermark_image_list : minimal.image_data?.no_watermark_image_list
     if (!list || !list[idx]) throw new HTTPException(404, { message: `No image at index ${idx}` })
     return { url: list[idx], contentType: 'image/jpeg', ext: 'jpeg' }
