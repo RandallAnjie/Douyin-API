@@ -100,15 +100,17 @@ export function teeIntoCache (bucket, ctx, key, upstreamResponse, contentType) {
 export async function cachePopulateAside (bucket, ctx, key, rangeFetcher, fullFetcher, contentType) {
   const userPromise = rangeFetcher()
   if (bucket && ctx?.waitUntil) {
-    ctx.waitUntil((async () => {
-      let full
-      try { full = await fullFetcher() } catch { return }
-      if (!full || !full.ok || !full.body) return
-      const ct = contentType || full.headers.get('content-type') || 'application/octet-stream'
-      try { await bucket.put(key, full.body, { httpMetadata: { contentType: ct } }) } catch (e) {
-        try { console.error('[r2] aside put failed', key, e?.message || e) } catch {}
-      }
-    })())
+    ctx.waitUntil(r2PutRetry(
+      bucket, key,
+      // Re-fetch per attempt (the plane PUT 502s intermittently).
+      async () => {
+        const full = await fullFetcher()
+        if (!full || !full.ok || !full.body) throw new Error('aside fetch not ok')
+        return full.body
+      },
+      { httpMetadata: { contentType: contentType || 'application/octet-stream' } },
+      2
+    ))
   }
   return userPromise
 }

@@ -1241,24 +1241,18 @@ function teeIntoCache(bucket, ctx, key, upstreamResponse, contentType) {
 async function cachePopulateAside(bucket, ctx, key, rangeFetcher, fullFetcher, contentType) {
   const userPromise = rangeFetcher();
   if (bucket && ctx?.waitUntil) {
-    ctx.waitUntil((async () => {
-      let full;
-      try {
-        full = await fullFetcher();
-      } catch {
-        return;
-      }
-      if (!full || !full.ok || !full.body) return;
-      const ct = contentType || full.headers.get("content-type") || "application/octet-stream";
-      try {
-        await bucket.put(key, full.body, { httpMetadata: { contentType: ct } });
-      } catch (e) {
-        try {
-          console.error("[r2] aside put failed", key, e?.message || e);
-        } catch {
-        }
-      }
-    })());
+    ctx.waitUntil(r2PutRetry(
+      bucket,
+      key,
+      // Re-fetch per attempt (the plane PUT 502s intermittently).
+      async () => {
+        const full = await fullFetcher();
+        if (!full || !full.ok || !full.body) throw new Error("aside fetch not ok");
+        return full.body;
+      },
+      { httpMetadata: { contentType: contentType || "application/octet-stream" } },
+      2
+    ));
   }
   return userPromise;
 }
@@ -2059,6 +2053,8 @@ async function downloadService(request, ctx) {
 }
 
 // src/service/proxy.js
+var BUFFER_CAP = 20 * 1024 * 1024;
+var SMALL_MEDIA = 2 * 1024 * 1024;
 var REFERER = { douyin: "https://www.douyin.com/", tiktok: "https://www.tiktok.com/" };
 async function proxyService(request, ctx) {
   const url = new URL(request.url);
@@ -2088,7 +2084,7 @@ async function proxyService(request, ctx) {
   };
   const rangeHeader = request.headers.get("range");
   if (rangeHeader && bucket) {
-    const resp2 = await cachePopulateAside(
+    const resp = await cachePopulateAside(
       bucket,
       ctx,
       key,
@@ -2096,14 +2092,37 @@ async function proxyService(request, ctx) {
       () => fetch(cdnUrl, { headers: reqHeaders }),
       contentType
     );
-    return withDisposition(resp2, download, platform, id, kind, ext);
+    return withDisposition(resp, download, platform, id, kind, ext);
   }
   const upstream = await fetch(cdnUrl, { headers: rangeHeader ? { ...reqHeaders, range: rangeHeader } : reqHeaders });
   if (!upstream.ok || !upstream.body) {
     throw new HTTPException(502, { message: `Upstream media fetch failed (${upstream.status})` });
   }
-  const resp = bucket && !rangeHeader ? teeIntoCache(bucket, ctx, key, upstream, contentType) : wrapMedia(upstream, contentType, "upstream-plain");
-  return withDisposition(resp, download, platform, id, kind, ext);
+  if (!bucket || rangeHeader) {
+    return withDisposition(wrapMedia(upstream, contentType, "upstream-plain"), download, platform, id, kind, ext);
+  }
+  const cl = Number(upstream.headers.get("content-length") || 0);
+  if (cl && cl <= BUFFER_CAP) {
+    const buf = await upstream.arrayBuffer();
+    const putP = r2PutRetry(bucket, key, () => new Response(buf).body, { httpMetadata: { contentType } });
+    if (cl <= SMALL_MEDIA) {
+      try {
+        await putP;
+      } catch {
+      }
+    } else if (ctx?.waitUntil) {
+      ctx.waitUntil(putP);
+    }
+    const out = new Headers({
+      "content-type": contentType,
+      "content-length": String(buf.byteLength),
+      "accept-ranges": "bytes",
+      "cache-control": "public, max-age=300",
+      "x-cache-source": "upstream-buffer"
+    });
+    return withDisposition(new Response(buf, { status: 200, headers: out }), download, platform, id, kind, ext);
+  }
+  return withDisposition(teeIntoCache(bucket, ctx, key, upstream, contentType), download, platform, id, kind, ext);
 }
 function wrapMedia(upstream, contentType, source) {
   const out = new Headers();

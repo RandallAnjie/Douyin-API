@@ -10,7 +10,16 @@
 import { HTTPException } from '../utils/http-exception.js'
 import { requireAuth } from '../utils/auth.js'
 import { fetchRawById, toMinimal, resolveKindUrl } from '../hybrid/crawler.js'
-import { serveFromR2, teeIntoCache, cachePopulateAside, mediaKey } from '../utils/r2cache.js'
+import { serveFromR2, teeIntoCache, cachePopulateAside, r2PutRetry, mediaKey } from '../utils/r2cache.js'
+
+// Media at or under this size is buffered so the R2 write can be
+// retried from memory (the plane PUT 502s intermittently); larger
+// files fall back to a single-shot tee. Douyin/TikTok short clips and
+// images sit well under this.
+const BUFFER_CAP = 20 * 1024 * 1024
+// At or under this, await the R2 write (cheap, guarantees the cache
+// lands); above it, write in the background.
+const SMALL_MEDIA = 2 * 1024 * 1024
 
 const REFERER = { douyin: 'https://www.douyin.com/', tiktok: 'https://www.tiktok.com/' }
 
@@ -64,10 +73,31 @@ export async function proxyService (request, ctx) {
   if (!upstream.ok || !upstream.body) {
     throw new HTTPException(502, { message: `Upstream media fetch failed (${upstream.status})` })
   }
-  const resp = bucket && !rangeHeader
-    ? teeIntoCache(bucket, ctx, key, upstream, contentType)
-    : wrapMedia(upstream, contentType, 'upstream-plain')
-  return withDisposition(resp, download, platform, id, kind, ext)
+
+  // No cache, or a Range we couldn't aside (no bucket) → plain proxy.
+  if (!bucket || rangeHeader) {
+    return withDisposition(wrapMedia(upstream, contentType, 'upstream-plain'), download, platform, id, kind, ext)
+  }
+
+  // Cache miss, full body. Buffer small media so the R2 put can retry
+  // from memory; tee larger media single-shot.
+  const cl = Number(upstream.headers.get('content-length') || 0)
+  if (cl && cl <= BUFFER_CAP) {
+    const buf = await upstream.arrayBuffer()
+    const putP = r2PutRetry(bucket, key, () => new Response(buf).body, { httpMetadata: { contentType } })
+    // Small media (covers/images): await so it reliably lands. Larger
+    // clips: cache in the background to avoid blocking the download.
+    if (cl <= SMALL_MEDIA) { try { await putP } catch {} } else if (ctx?.waitUntil) { ctx.waitUntil(putP) }
+    const out = new Headers({
+      'content-type': contentType,
+      'content-length': String(buf.byteLength),
+      'accept-ranges': 'bytes',
+      'cache-control': 'public, max-age=300',
+      'x-cache-source': 'upstream-buffer'
+    })
+    return withDisposition(new Response(buf, { status: 200, headers: out }), download, platform, id, kind, ext)
+  }
+  return withDisposition(teeIntoCache(bucket, ctx, key, upstream, contentType), download, platform, id, kind, ext)
 }
 
 function wrapMedia (upstream, contentType, source) {
