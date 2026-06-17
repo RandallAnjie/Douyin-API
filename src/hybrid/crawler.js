@@ -37,7 +37,17 @@ export async function fetchRawById (ctx, platform, id, refresh = false) {
   if (platform === 'douyin') {
     const { data, cached } = await fetchDouyinDetailCached(ctx, id, refresh)
     const raw = data.aweme_detail
-    if (!raw) throw new HTTPException(502, { message: 'Douyin returned no aweme_detail (bad cookie/signature?)' })
+    if (!raw) {
+      const reason = data.filter_detail?.filter_reason || ''
+      if (/vr|360/i.test(reason)) {
+        throw new HTTPException(422, { message: '这是抖音 360°/VR 全景视频，抖音仅允许在 App 内观看，网页 / 分享接口均不返回媒体地址，暂无法解析。' })
+      }
+      if (reason) {
+        const notice = data.filter_detail?.notice || data.filter_detail?.detail_msg || ''
+        throw new HTTPException(422, { message: `抖音拒绝返回该作品（${reason}${notice ? '：' + notice : ''}）` })
+      }
+      throw new HTTPException(502, { message: 'Douyin returned no aweme_detail (bad cookie/signature?)' })
+    }
     return { raw, cached }
   }
   if (platform === 'tiktok') {

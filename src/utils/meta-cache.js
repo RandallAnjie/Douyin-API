@@ -15,7 +15,14 @@ export async function fetchDouyinDetailCached (ctx, awemeId, refresh = false) {
     if (cached) return { data: cached, cached: true }
   }
   const data = await douyin.fetchOneVideo(ctx, awemeId)
-  putJson(bucket, ctx, key, data)
+  if (!data.aweme_detail) {
+    // Web detail endpoint returned nothing — try the share-page fallback.
+    const share = await douyin.fetchShareDetail(ctx, awemeId)
+    if (share.aweme_detail) data.aweme_detail = share.aweme_detail
+    else if (!data.filter_detail && share.filter_detail) data.filter_detail = share.filter_detail
+  }
+  // Don't poison the cache with an empty/filtered response.
+  if (data.aweme_detail) putJson(bucket, ctx, key, data)
   return { data, cached: false }
 }
 

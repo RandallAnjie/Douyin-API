@@ -45,6 +45,35 @@ export function fetchOneVideo (ctx, awemeId) {
   return aBogusGet(ctx, EP.POST_DETAIL, params)
 }
 
+// Fallback source: the iesdouyin mobile share page embeds the full aweme
+// item in `window._ROUTER_DATA`. When the signed web detail endpoint
+// returns no aweme_detail (transient errors, some region/age gates), this
+// often still serves it. Returns { aweme_detail, filter_detail } in the
+// same shape the detail endpoint uses. 360/VR videos are filtered here
+// too (filter_reason 360_vr_*), so this surfaces the real reason.
+const SHARE_MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
+
+export async function fetchShareDetail (ctx, awemeId) {
+  const url = `https://www.iesdouyin.com/share/video/${awemeId}/`
+  let html
+  try {
+    const resp = await fetch(url, { headers: { 'User-Agent': SHARE_MOBILE_UA, Referer: 'https://www.iesdouyin.com/' } })
+    html = await resp.text()
+  } catch {
+    return { aweme_detail: null }
+  }
+  const m = html.match(/window\._ROUTER_DATA\s*=\s*(\{.+?\})<\/script>/s)
+  if (!m) return { aweme_detail: null }
+  let data
+  try { data = JSON.parse(m[1]) } catch { return { aweme_detail: null } }
+  const page = data.loaderData && data.loaderData['video_(id)/page']
+  const res = page && page.videoInfoRes
+  return {
+    aweme_detail: (res && res.item_list && res.item_list[0]) || null,
+    filter_detail: (res && res.filter_list && res.filter_list[0]) || null
+  }
+}
+
 export function fetchUserPostVideos (ctx, secUserId, maxCursor, count) {
   const params = { ...baseRequestParams(''), max_cursor: String(maxCursor), count: String(count), sec_user_id: secUserId }
   return aBogusGet(ctx, EP.USER_POST, params)

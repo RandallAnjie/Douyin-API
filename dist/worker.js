@@ -1009,6 +1009,31 @@ function fetchOneVideo(ctx, awemeId) {
   const params = { ...baseRequestParams(""), aweme_id: awemeId };
   return aBogusGet(ctx, DouyinEndpoints.POST_DETAIL, params);
 }
+var SHARE_MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1";
+async function fetchShareDetail(ctx, awemeId) {
+  const url = `https://www.iesdouyin.com/share/video/${awemeId}/`;
+  let html;
+  try {
+    const resp = await fetch(url, { headers: { "User-Agent": SHARE_MOBILE_UA, Referer: "https://www.iesdouyin.com/" } });
+    html = await resp.text();
+  } catch {
+    return { aweme_detail: null };
+  }
+  const m = html.match(/window\._ROUTER_DATA\s*=\s*(\{.+?\})<\/script>/s);
+  if (!m) return { aweme_detail: null };
+  let data;
+  try {
+    data = JSON.parse(m[1]);
+  } catch {
+    return { aweme_detail: null };
+  }
+  const page = data.loaderData && data.loaderData["video_(id)/page"];
+  const res = page && page.videoInfoRes;
+  return {
+    aweme_detail: res && res.item_list && res.item_list[0] || null,
+    filter_detail: res && res.filter_list && res.filter_list[0] || null
+  };
+}
 function fetchUserPostVideos(ctx, secUserId, maxCursor, count) {
   const params = { ...baseRequestParams(""), max_cursor: String(maxCursor), count: String(count), sec_user_id: secUserId };
   return aBogusGet(ctx, DouyinEndpoints.USER_POST, params);
@@ -1358,7 +1383,12 @@ async function fetchDouyinDetailCached(ctx, awemeId, refresh = false) {
     if (cached) return { data: cached, cached: true };
   }
   const data = await fetchOneVideo(ctx, awemeId);
-  putJson(bucket, ctx, key, data);
+  if (!data.aweme_detail) {
+    const share = await fetchShareDetail(ctx, awemeId);
+    if (share.aweme_detail) data.aweme_detail = share.aweme_detail;
+    else if (!data.filter_detail && share.filter_detail) data.filter_detail = share.filter_detail;
+  }
+  if (data.aweme_detail) putJson(bucket, ctx, key, data);
   return { data, cached: false };
 }
 async function fetchTiktokAwemeCached(ctx, awemeId, refresh = false) {
@@ -1874,7 +1904,17 @@ async function fetchRawById(ctx, platform, id, refresh = false) {
   if (platform === "douyin") {
     const { data, cached } = await fetchDouyinDetailCached(ctx, id, refresh);
     const raw = data.aweme_detail;
-    if (!raw) throw new HTTPException(502, { message: "Douyin returned no aweme_detail (bad cookie/signature?)" });
+    if (!raw) {
+      const reason = data.filter_detail?.filter_reason || "";
+      if (/vr|360/i.test(reason)) {
+        throw new HTTPException(422, { message: "\u8FD9\u662F\u6296\u97F3 360\xB0/VR \u5168\u666F\u89C6\u9891\uFF0C\u6296\u97F3\u4EC5\u5141\u8BB8\u5728 App \u5185\u89C2\u770B\uFF0C\u7F51\u9875 / \u5206\u4EAB\u63A5\u53E3\u5747\u4E0D\u8FD4\u56DE\u5A92\u4F53\u5730\u5740\uFF0C\u6682\u65E0\u6CD5\u89E3\u6790\u3002" });
+      }
+      if (reason) {
+        const notice = data.filter_detail?.notice || data.filter_detail?.detail_msg || "";
+        throw new HTTPException(422, { message: `\u6296\u97F3\u62D2\u7EDD\u8FD4\u56DE\u8BE5\u4F5C\u54C1\uFF08${reason}${notice ? "\uFF1A" + notice : ""}\uFF09` });
+      }
+      throw new HTTPException(502, { message: "Douyin returned no aweme_detail (bad cookie/signature?)" });
+    }
     return { raw, cached };
   }
   if (platform === "tiktok") {
