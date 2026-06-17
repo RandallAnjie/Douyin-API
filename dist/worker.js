@@ -2583,8 +2583,8 @@ footer a{color:var(--muted)}
 
   <div class=keybar>
     <label for=key>\u8BBF\u95EE\u94A5\u5319</label>
-    <input id=key type=password autocomplete=off spellcheck=false placeholder="\u7559\u7A7A = \u6E38\u5BA2\u6A21\u5F0F\uFF08\u4E34\u65F6\u94FE\u63A5\uFF09">
-    <span class=hint>\u586B\u4E86\u5F97\u6C38\u4E45\u94FE\u63A5 + \u539F\u59CB\u6570\u636E</span>
+    <input id=key type=password autocomplete=off spellcheck=false placeholder="\u53EF\u7559\u7A7A">
+    <span class=hint>\u6E38\u5BA2\u9650\u6B21</span>
   </div>
 
   <div class=slot>

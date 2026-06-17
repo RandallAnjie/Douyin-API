@@ -124,8 +124,8 @@ footer a{color:var(--muted)}
 
   <div class=keybar>
     <label for=key>访问钥匙</label>
-    <input id=key type=password autocomplete=off spellcheck=false placeholder="留空 = 游客模式（临时链接）">
-    <span class=hint>填了得永久链接 + 原始数据</span>
+    <input id=key type=password autocomplete=off spellcheck=false placeholder="可留空">
+    <span class=hint>游客限次</span>
   </div>
 
   <div class=slot>
