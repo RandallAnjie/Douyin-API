@@ -35,6 +35,7 @@ it into a RandallFlare worker (or `wrangler` project with
 | `HTTP_PREFIX` | mount sub-path, e.g. `/v1` | *(empty)* |
 | `DEFAULT_USER_AGENT` | override the signing UA (advanced) | Chrome 90 desktop |
 | `DOUYIN_R2` | R2 bucket binding for media + metadata cache | *(unbound → no cache)* |
+| `DOUYIN_D1` | D1 database binding for the query log / `/admin` | *(unbound → admin empty)* |
 | `META_CACHE_TTL` | metadata JSON freshness, seconds | `3600` (1h) |
 | `LOG_LEVEL` | `info` / `debug` / … | `info` |
 
@@ -66,8 +67,10 @@ node -e 'console.log(require("crypto").createHmac("sha1","SECRET").update("douyi
 ## Endpoints
 
 `/` serves **解析台** — a paste-to-parse web UI (enter your token once,
-paste a Douyin/TikTok share command, get the no-watermark download).
-`/docs` is the full live route index. Summary:
+paste a Douyin/TikTok share command; videos play inline and image sets
+display, all through the cached proxy, with no-watermark downloads).
+`/admin` is the recent-query log (needs `DOUYIN_D1`). `/docs` is the
+full live route index. Summary:
 
 - `GET /api/douyin/web/{fetch_one_video,fetch_user_post_videos,fetch_user_like_videos,fetch_user_mix_videos,handler_user_profile,fetch_video_comments,fetch_video_comment_replies,fetch_user_live_videos,fetch_user_live_videos_by_room_id,fetch_live_gift_ranking}` 🔒
 - `GET /api/douyin/web/{generate_real_msToken,generate_ttwid,generate_verify_fp,generate_s_v_web_id,generate_x_bogus,generate_a_bogus,get_aweme_id,get_sec_user_id,get_webcast_id}` + `POST get_all_*`
@@ -77,6 +80,7 @@ paste a Douyin/TikTok share command, get the no-watermark download).
 - `GET /api/hybrid/video_data?url=&minimal=&refresh=&proxy=` 🔒
 - `GET /download?url=&with_watermark=` 🔒 — streams the media file
 - `GET /proxy?platform=&id=&kind=&download=&refresh=` 🔒 — id-based media reverse proxy with R2 cache
+- `GET /admin` — recent-query dashboard · `GET /api/admin/recent?token=` — query log JSON (master-token)
 
 Responses are wrapped as `{ code, router, params, data }`; `data` is
 the upstream JSON verbatim (or the unified hybrid schema when

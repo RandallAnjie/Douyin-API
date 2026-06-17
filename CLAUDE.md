@@ -43,7 +43,8 @@ src/douyin/       endpoints + crawler
 src/tiktok/web/   endpoints + crawler   (X-Bogus)
 src/tiktok/app/   crawler               (api22 feed, no signature)
 src/hybrid/       crawler (detect + by-id fetch + pure toMinimal mapper + resolveKindUrl)
-src/service/      douyin.js / tiktok.js / hybrid.js / proxy.js / docs.js  (route handlers + auth)
+src/service/      douyin.js / tiktok.js / hybrid.js / proxy.js / app.js (解析台) / admin.js / docs.js
+src/utils/db.js   D1 query log (logQuery upsert + recentQueries); no-ops without DOUYIN_D1
 src/utils/r2cache.js    R2 bytes (serveFromR2/teeIntoCache/cachePopulateAside) + JSON (getJson/putJson)
 src/utils/meta-cache.js cached douyin/tiktok fetchers (meta/{platform}/{id}.json, TTL via R2 uploaded)
 src/utils/proxy-link.js rewrite minimal media URLs -> /proxy self-links with per-resource HMAC
