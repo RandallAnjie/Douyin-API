@@ -2118,6 +2118,33 @@ async function cacheDebugService(request, ctx) {
   const bucket = ctx.config.mediaR2;
   const r = { waitUntil: typeof ctx.waitUntil, bucketBound: !!bucket };
   if (!bucket) return rawJsonResponse(r);
+  const readKey = url.searchParams.get("key");
+  if (readKey) {
+    r.key = readKey;
+    try {
+      const h = await bucket.head(readKey);
+      r.headFound = !!h;
+      r.headUploaded = h?.uploaded ? String(h.uploaded) : null;
+    } catch (e) {
+      r.headErr = String(e?.message || e);
+    }
+    try {
+      const o = await bucket.get(readKey);
+      r.getFound = !!o;
+      if (o) {
+        r.getUploaded = o.uploaded ? String(o.uploaded) : null;
+        r.ageSec = o.uploaded ? Math.round((Date.now() - new Date(o.uploaded).getTime()) / 1e3) : null;
+        try {
+          r.bodyLen = (await new Response(o.body).text()).length;
+        } catch (e) {
+          r.bodyErr = String(e?.message || e);
+        }
+      }
+    } catch (e) {
+      r.getErr = String(e?.message || e);
+    }
+    return rawJsonResponse(r);
+  }
   const key = "meta/_debug.json";
   const payload = JSON.stringify({ t: Date.now(), hello: "world" });
   try {
