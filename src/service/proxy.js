@@ -79,18 +79,20 @@ export async function proxyService (request, ctx) {
     return withDisposition(wrapMedia(upstream, contentType, 'upstream-plain'), download, platform, id, kind, ext)
   }
 
-  // Cache miss, full body. Buffer small media so the R2 put can retry
-  // from memory; tee larger media single-shot.
+  // Cache miss, full body. Buffer so the R2 put can retry from memory.
+  // Douyin's play CDN often omits content-length, so treat unknown
+  // length as bufferable too; only a *known* oversized body tees.
   const cl = Number(upstream.headers.get('content-length') || 0)
-  if (cl && cl <= BUFFER_CAP) {
+  if (cl <= BUFFER_CAP) {
     const buf = await upstream.arrayBuffer()
+    const size = buf.byteLength
     const putP = r2PutRetry(bucket, key, () => new Response(buf).body, { httpMetadata: { contentType } })
-    // Small media (covers/images): await so it reliably lands. Larger
-    // clips: cache in the background to avoid blocking the download.
-    if (cl <= SMALL_MEDIA) { try { await putP } catch {} } else if (ctx?.waitUntil) { ctx.waitUntil(putP) }
+    // Small media (covers/images/short clips): await so it reliably
+    // lands. Larger clips: cache in the background.
+    if (size <= SMALL_MEDIA) { try { await putP } catch {} } else if (ctx?.waitUntil) { ctx.waitUntil(putP) }
     const out = new Headers({
       'content-type': contentType,
-      'content-length': String(buf.byteLength),
+      'content-length': String(size),
       'accept-ranges': 'bytes',
       'cache-control': 'public, max-age=300',
       'x-cache-source': 'upstream-buffer'

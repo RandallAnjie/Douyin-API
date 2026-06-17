@@ -2102,10 +2102,11 @@ async function proxyService(request, ctx) {
     return withDisposition(wrapMedia(upstream, contentType, "upstream-plain"), download, platform, id, kind, ext);
   }
   const cl = Number(upstream.headers.get("content-length") || 0);
-  if (cl && cl <= BUFFER_CAP) {
+  if (cl <= BUFFER_CAP) {
     const buf = await upstream.arrayBuffer();
+    const size = buf.byteLength;
     const putP = r2PutRetry(bucket, key, () => new Response(buf).body, { httpMetadata: { contentType } });
-    if (cl <= SMALL_MEDIA) {
+    if (size <= SMALL_MEDIA) {
       try {
         await putP;
       } catch {
@@ -2115,7 +2116,7 @@ async function proxyService(request, ctx) {
     }
     const out = new Headers({
       "content-type": contentType,
-      "content-length": String(buf.byteLength),
+      "content-length": String(size),
       "accept-ranges": "bytes",
       "cache-control": "public, max-age=300",
       "x-cache-source": "upstream-buffer"
