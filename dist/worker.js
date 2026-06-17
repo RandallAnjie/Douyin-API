@@ -2094,8 +2094,8 @@ async function recentQueries(ctx, limit = 10, offset = 0) {
       `SELECT platform, video_id, type, author, description, original_url, cover, play, hits, created_at, updated_at
        FROM queries ORDER BY updated_at DESC LIMIT ? OFFSET ?`
     ).bind(limit, offset).all();
-    const cnt = await db.prepare("SELECT COUNT(*) AS n FROM queries").first();
-    return { rows: res?.results || [], total: cnt?.n || 0 };
+    const cnt = await db.prepare("SELECT COUNT(*) AS n FROM queries").all();
+    return { rows: res?.results || [], total: cnt?.results?.[0]?.n || 0 };
   } catch (e) {
     try {
       console.error("[d1] recentQueries failed", e?.message || e);
@@ -2116,8 +2116,8 @@ async function rateLimitHit(ctx, ip, limit, windowSec) {
     const nowSec = Math.floor(Date.now() / 1e3);
     const bucket = Math.floor(nowSec / windowSec);
     await db.prepare("INSERT INTO rate (ip, bucket, n) VALUES (?, ?, 1) ON CONFLICT(ip, bucket) DO UPDATE SET n = n + 1").bind(ip, bucket).run();
-    const row = await db.prepare("SELECT n FROM rate WHERE ip = ? AND bucket = ?").bind(ip, bucket).first();
-    const count = row?.n || 1;
+    const res = await db.prepare("SELECT n FROM rate WHERE ip = ? AND bucket = ?").bind(ip, bucket).all();
+    const count = res?.results?.[0]?.n || 1;
     return { allowed: count <= limit, count, limit, resetSec: (bucket + 1) * windowSec - nowSec };
   } catch (e) {
     try {
