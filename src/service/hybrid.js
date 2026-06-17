@@ -60,7 +60,14 @@ export async function hybridService (route, request, ctx) {
       cover: proxyLink(request, ctx, platform, id, 'cover'),
       play: min.type === 'video' ? proxyLink(request, ctx, platform, id, 'nwm') : null,
       duration: raw.duration ? Math.round(raw.duration / 1000) : null,
-      extra: { stats: min.statistics || null }
+      extra: {
+        stats: min.statistics || null,
+        // For image posts, store the cached proxy image links so the
+        // discover lightbox can show them with zero extra requests.
+        images: min.type === 'image' && min.image_data
+          ? min.image_data.no_watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `image${i}`))
+          : undefined
+      }
     })
 
     let data = minimal ? min : raw
