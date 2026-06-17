@@ -2111,6 +2111,26 @@ var parseRow = (r) => {
   return r;
 };
 var j = (v) => v == null ? null : JSON.stringify(v);
+async function metaGet(ctx, k) {
+  const db = ctx.config.d1;
+  if (!db) return null;
+  try {
+    await ensureSchema(db);
+    const r = await db.prepare("SELECT v, ts FROM kv_meta WHERE k = ?").bind(k).all();
+    return r?.results?.[0] || null;
+  } catch {
+    return null;
+  }
+}
+async function metaSet(ctx, k, v) {
+  const db = ctx.config.d1;
+  if (!db) return;
+  try {
+    await ensureSchema(db);
+    await db.prepare("INSERT INTO kv_meta (k, v, ts) VALUES (?, ?, ?) ON CONFLICT(k) DO UPDATE SET v = ?, ts = ?").bind(k, String(v ?? ""), Date.now(), String(v ?? ""), Date.now()).run();
+  } catch {
+  }
+}
 async function logQuery(ctx, row) {
   const db = ctx.config.d1;
   if (!db) return;
@@ -2240,6 +2260,49 @@ async function getWork(ctx, platform, videoId) {
     return null;
   }
 }
+async function storeComments(ctx, platform, videoId, comments) {
+  const db = ctx.config.d1;
+  if (!db || !comments?.length) return 0;
+  try {
+    await ensureSchema(db);
+    const now = Date.now();
+    let n = 0;
+    for (const c of comments) {
+      if (!c.comment_id) continue;
+      try {
+        await db.prepare(`INSERT INTO comments (platform, video_id, comment_id, parent_id, author, author_id, avatar, text, likes, ctime, fetched_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(platform, video_id, comment_id) DO UPDATE SET likes = ?, text = ?, fetched_at = ?`).bind(platform, videoId, String(c.comment_id), c.parent_id ?? null, c.author ?? null, c.author_id ?? null, c.avatar ?? null, c.text ?? null, c.likes ?? 0, c.ctime ?? null, now, c.likes ?? 0, c.text ?? null, now).run();
+        n++;
+      } catch {
+      }
+    }
+    await metaSet(ctx, `cmt:${platform}:${videoId}`, now);
+    return n;
+  } catch (e) {
+    try {
+      console.error("[d1] storeComments failed", e?.message || e);
+    } catch {
+    }
+    return 0;
+  }
+}
+async function getComments(ctx, platform, videoId, limit = 20, offset = 0) {
+  const db = ctx.config.d1;
+  if (!db) return { rows: [], total: 0 };
+  try {
+    await ensureSchema(db);
+    const r = await db.prepare("SELECT comment_id, parent_id, author, author_id, avatar, text, likes, ctime FROM comments WHERE platform = ? AND video_id = ? ORDER BY likes DESC, ctime DESC LIMIT ? OFFSET ?").bind(platform, videoId, limit, offset).all();
+    const cnt = await db.prepare("SELECT COUNT(*) AS n FROM comments WHERE platform = ? AND video_id = ?").bind(platform, videoId).all();
+    return { rows: r?.results || [], total: cnt?.results?.[0]?.n || 0 };
+  } catch (e) {
+    try {
+      console.error("[d1] getComments failed", e?.message || e);
+    } catch {
+    }
+    return { rows: [], total: 0 };
+  }
+}
 async function rateLimitHit(ctx, ip, limit, windowSec) {
   if (ctx.config.kv) return rateLimitKV(ctx.config.kv, ip, limit, windowSec);
   if (ctx.config.d1) return rateLimitD1(ctx.config.d1, ip, limit, windowSec);
@@ -2287,6 +2350,43 @@ async function rateLimitD1(db, ip, limit, windowSec) {
     }
     return { allowed: false, reason: "error" };
   }
+}
+
+// src/utils/comments.js
+var TTL = 6 * 3600 * 1e3;
+function normalize(resp) {
+  const list = resp?.comments || [];
+  return list.map((c) => ({
+    comment_id: c.cid,
+    parent_id: null,
+    text: c.text,
+    author: c.user?.nickname || null,
+    author_id: c.user?.sec_uid || (c.user?.uid != null ? String(c.user.uid) : null),
+    avatar: c.user?.avatar_thumb?.url_list?.[0] || null,
+    likes: c.digg_count ?? 0,
+    ctime: c.create_time ?? null
+  })).filter((c) => c.comment_id);
+}
+async function fetchRaw(ctx, platform, id, count) {
+  if (platform === "tiktok") return fetchPostComment(ctx, id, 0, count, "");
+  return fetchVideoComments(ctx, id, 0, count);
+}
+async function fetchAndStoreComments(ctx, platform, id, { count = 50 } = {}) {
+  try {
+    const resp = await fetchRaw(ctx, platform, id, count);
+    return await storeComments(ctx, platform, id, normalize(resp));
+  } catch (e) {
+    try {
+      console.error("[comments] fetch failed", platform, id, e?.message || e);
+    } catch {
+    }
+    return 0;
+  }
+}
+async function maybeFetchComments(ctx, platform, id) {
+  const m = await metaGet(ctx, `cmt:${platform}:${id}`);
+  if (m && Date.now() - m.ts < TTL) return 0;
+  return fetchAndStoreComments(ctx, platform, id);
 }
 
 // src/service/hybrid.js
@@ -2358,6 +2458,7 @@ async function hybridService(route, request, ctx) {
         images: min.type === "image" && min.image_data ? min.image_data.no_watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `image${i}`)) : void 0
       }
     });
+    if (ctx.waitUntil) ctx.waitUntil(maybeFetchComments(ctx, platform, id));
     let data = minimal ? min : raw;
     if (minimal && proxy) data = rewriteMinimalToProxy(data, request, ctx, linkTtl);
     return jsonResponse(data, { router: "hybrid/video_data", params: { url: target, minimal, proxy, guest } });
@@ -2886,6 +2987,13 @@ h2{font-size:15px;margin:34px 0 6px;font-family:var(--serif);letter-spacing:.04e
 svg{width:100%;height:auto;display:block}
 .hint{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:8px}
 .status{font-family:var(--mono);font-size:12px;color:var(--muted);margin:20px 2px}
+.cmts{display:flex;flex-direction:column;gap:12px;margin-top:8px}
+.cmt{display:flex;gap:10px}
+.cmt img{width:32px;height:32px;border-radius:50%;object-fit:cover;background:#0e0d12;border:1px solid var(--line);flex:0 0 32px}
+.cmt .cb{min-width:0}
+.cmt .ca{font-family:var(--mono);font-size:12px;color:var(--teal)}
+.cmt .ct{font-size:14px;margin:2px 0;word-break:break-word}
+.cmt .cm{font-family:var(--mono);font-size:11px;color:var(--faint)}
 </style>
 </head>
 <body>
@@ -2981,12 +3089,54 @@ svg{width:100%;height:auto;display:block}
     if(hist.length<2){cw.innerHTML='<div class=hint>\u5DF2\u6709 '+hist.length+' \u4E2A\u6570\u636E\u70B9\u3002\u591A\u89E3\u6790\u51E0\u6B21\uFF08\u6216\u8FC7\u6BB5\u65F6\u95F4\u518D\u89E3\u6790\uFF09\u5373\u53EF\u5F62\u6210\u8D8B\u52BF\u66F2\u7EBF\u3002</div>'}
     else cw.innerHTML=lineChart(hist)
     app.appendChild(cw)
+    // comments
+    app.appendChild(el('h2',null,'\u70ED\u95E8\u8BC4\u8BBA'))
+    var cm=el('div','cmts');cm.id='cmts';cm.appendChild(el('div','hint','\u52A0\u8F7D\u4E2D\u2026'));app.appendChild(cm)
+    loadComments(w.platform,w.video_id)
+  }
+  async function loadComments(platform,id){
+    var box=$('#cmts');if(!box)return
+    try{
+      var r=await fetch('/api/comments?platform='+encodeURIComponent(platform)+'&id='+encodeURIComponent(id)+'&limit=30')
+      var j=await r.json();var rows=j.data||[]
+      box.innerHTML=''
+      if(!rows.length){box.appendChild(el('div','hint','\u6682\u65E0\u8BC4\u8BBA\uFF08\u6216\u6B63\u5728\u6293\u53D6\uFF0C\u7A0D\u540E\u5237\u65B0\uFF09'));return}
+      rows.forEach(function(c){
+        var it=el('div','cmt')
+        if(c.avatar){var im=el('img');im.src=c.avatar;im.loading='lazy';it.appendChild(im)}
+        var b=el('div','cb')
+        b.appendChild(el('div','ca',c.author||'\u533F\u540D'))
+        b.appendChild(el('div','ct',c.text||''))
+        b.appendChild(el('div','cm','\u8D5E '+fmt(c.likes)+(c.ctime?(' \xB7 '+datestr(c.ctime)):'')))
+        it.appendChild(b);box.appendChild(it)
+      })
+    }catch(e){box.innerHTML='<div class=hint>\u8BC4\u8BBA\u52A0\u8F7D\u5931\u8D25\uFF1A'+e.message+'</div>'}
   }
   load()
 })();
 </script>
 </body>
 </html>`;
+
+// src/service/comments.js
+async function commentsApiService(request, ctx) {
+  const url = new URL(request.url);
+  const platform = url.searchParams.get("platform") || "";
+  const id = url.searchParams.get("id") || "";
+  if (!platform || !id) throw new HTTPException(400, { message: "platform and id required" });
+  const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
+  const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 20));
+  let { rows, total } = await getComments(ctx, platform, id, limit, (page - 1) * limit);
+  if (!total && page === 1) {
+    const g = ctx.config.guest;
+    const rl = await rateLimitHit(ctx, getClientIp(request), g.limit, g.windowSec);
+    if (rl.allowed) {
+      await maybeFetchComments(ctx, platform, id);
+      ({ rows, total } = await getComments(ctx, platform, id, limit, 0));
+    }
+  }
+  return rawJsonResponse({ code: 200, platform, id, page, limit, total, count: rows.length, data: rows });
+}
 
 // src/service/app.js
 async function appService(request, ctx) {
@@ -3348,6 +3498,9 @@ async function router(request, ctx) {
   }
   if (pathname === "/api/work" && request.method === "GET") {
     return workApiService(request, ctx);
+  }
+  if (pathname === "/api/comments" && request.method === "GET") {
+    return commentsApiService(request, ctx);
   }
   if (pathname === "/api/admin/recent" && request.method === "GET") {
     return adminRecentService(request, ctx);

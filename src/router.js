@@ -16,6 +16,7 @@ import { proxyService } from './service/proxy.js'
 import { adminPageService, adminRecentService } from './service/admin.js'
 import { discoverPageService, discoverApiService } from './service/discover.js'
 import { workPageService, workApiService } from './service/work.js'
+import { commentsApiService } from './service/comments.js'
 import appService from './service/app.js'
 import docsService from './service/docs.js'
 import { HTTPException } from './utils/http-exception.js'
@@ -53,6 +54,9 @@ export async function router (request, ctx) {
   }
   if (pathname === '/api/work' && request.method === 'GET') {
     return workApiService(request, ctx)
+  }
+  if (pathname === '/api/comments' && request.method === 'GET') {
+    return commentsApiService(request, ctx)
   }
   if (pathname === '/api/admin/recent' && request.method === 'GET') {
     return adminRecentService(request, ctx)

@@ -5,6 +5,7 @@ import { isAuthorised, getClientIp } from '../utils/auth.js'
 import { hybridParseSingleVideo, resolvePlatformId, fetchRawById, toMinimal } from '../hybrid/crawler.js'
 import { rewriteMinimalToProxy, proxyLink } from '../utils/proxy-link.js'
 import { logQuery, rateLimitHit } from '../utils/db.js'
+import { maybeFetchComments } from '../utils/comments.js'
 
 const PLATFORM = 'hybrid'
 const truthy = (v) => ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase())
@@ -88,6 +89,9 @@ export async function hybridService (route, request, ctx) {
           : undefined
       }
     })
+
+    // Async: refresh this work's comments into D1 (best-effort, 6h TTL).
+    if (ctx.waitUntil) ctx.waitUntil(maybeFetchComments(ctx, platform, id))
 
     let data = minimal ? min : raw
     if (minimal && proxy) data = rewriteMinimalToProxy(data, request, ctx, linkTtl)
