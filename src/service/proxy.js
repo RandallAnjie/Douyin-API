@@ -9,8 +9,8 @@
 // scrubbing.
 import { HTTPException } from '../utils/http-exception.js'
 import { requireProxyAuth } from '../utils/auth.js'
-import { fetchRawById, toMinimal, resolveKindUrl } from '../hybrid/crawler.js'
-import { serveFromR2, cachePopulateAside, r2PutRetry, mediaKey } from '../utils/r2cache.js'
+import { fetchRawById, mediaCandidates } from '../hybrid/crawler.js'
+import { serveFromR2, r2PutRetry, mediaKey } from '../utils/r2cache.js'
 
 // Media at or under this is buffered so the R2 write can retry from
 // memory (the plane PUT 502s intermittently). A *known* larger body is
@@ -49,51 +49,56 @@ export async function proxyService (request, ctx) {
     if (hit) return withDisposition(hit, download, platform, id, kind)
   }
 
-  // Miss → resolve the current CDN url from (cached) metadata.
+  // Miss → resolve candidate CDN urls from (cached) metadata and try
+  // them in order; douyin returns dead/expired mirrors mixed in.
   const { raw } = await fetchRawById(ctx, platform, id, refresh)
-  const minimal = toMinimal(platform, id, raw)
-  const { url: cdnUrl, contentType, ext } = resolveKindUrl(minimal, kind)
-  if (!cdnUrl) throw new HTTPException(404, { message: `No media url for kind=${kind}` })
+  const candidates = mediaCandidates(platform, raw, kind)
+  if (!candidates.length) throw new HTTPException(404, { message: `No media url for kind=${kind}` })
 
+  const isVideo = kind === 'nwm' || kind === 'wm'
+  const contentType = isVideo ? 'video/mp4' : 'image/jpeg'
+  const ext = isVideo ? 'mp4' : 'jpeg'
   const reqHeaders = {
     'User-Agent': platform === 'douyin' ? ctx.config.douyin.userAgent : ctx.config.tiktok.userAgent,
     Referer: REFERER[platform]
   }
   const rangeHeader = request.headers.get('range')
 
-  // Range miss → serve a Range fetch now, populate full body to R2 aside.
-  if (rangeHeader && bucket) {
-    const resp = await cachePopulateAside(
-      bucket, ctx, key,
-      () => fetch(cdnUrl, { headers: { ...reqHeaders, range: rangeHeader } }).then(r => wrapMedia(r, contentType, 'upstream-range')),
-      () => fetch(cdnUrl, { headers: reqHeaders }),
-      contentType
-    )
-    return withDisposition(resp, download, platform, id, kind, ext)
+  // Probe candidates until one actually serves media.
+  let upstream = null
+  let usedUrl = null
+  for (const u of candidates) {
+    let r
+    try { r = await fetch(u, { headers: rangeHeader ? { ...reqHeaders, range: rangeHeader } : reqHeaders }) } catch { continue }
+    if (looksLikeMedia(r, kind, !!rangeHeader)) { upstream = r; usedUrl = u; break }
+    try { await r.body?.cancel() } catch {}
+  }
+  if (!upstream) {
+    throw new HTTPException(502, { message: `All ${candidates.length} candidate url(s) failed for kind=${kind}` })
   }
 
-  // No bucket, or no Range → single upstream fetch.
-  const upstream = await fetch(cdnUrl, { headers: rangeHeader ? { ...reqHeaders, range: rangeHeader } : reqHeaders })
-  if (!upstream.ok || !upstream.body) {
-    throw new HTTPException(502, { message: `Upstream media fetch failed (${upstream.status})` })
+  // Range request → serve the working slice; cache the full body of the
+  // SAME working url in the background.
+  if (rangeHeader) {
+    if (bucket && ctx?.waitUntil) {
+      ctx.waitUntil(r2PutRetry(bucket, key, async () => {
+        const f = await fetch(usedUrl, { headers: reqHeaders })
+        if (!f.ok || !f.body) throw new Error('aside fetch not ok')
+        return f.body
+      }, { httpMetadata: { contentType } }, 2))
+    }
+    return withDisposition(wrapMedia(upstream, contentType, 'upstream-range'), download, platform, id, kind, ext)
   }
 
-  // No cache, or a Range we couldn't aside (no bucket) → plain proxy.
-  if (!bucket || rangeHeader) {
-    return withDisposition(wrapMedia(upstream, contentType, 'upstream-plain'), download, platform, id, kind, ext)
-  }
-
-  // A *known* large body: stream straight through, no caching (avoid
-  // relaying tens of MB through memory just to attempt an R2 put).
+  // No cache bound, or a *known* large body → stream straight through.
   const cl = Number(upstream.headers.get('content-length') || 0)
-  if (cl > BUFFER_CAP) {
+  if (!bucket || cl > BUFFER_CAP) {
     return withDisposition(wrapMedia(upstream, contentType, 'upstream-plain'), download, platform, id, kind, ext)
   }
 
-  // Cache miss, bufferable body (incl. unknown length — douyin's play
-  // CDN often omits content-length). Buffer, serve from memory, and
-  // cache in the BACKGROUND (never block the user response on the R2
-  // put). Skip caching a suspiciously small body (likely an error).
+  // Bufferable (incl. unknown length — douyin's play CDN often omits
+  // content-length). Buffer, serve from memory, cache in the BACKGROUND
+  // (never block the response). Skip caching a too-small (error) body.
   const buf = await upstream.arrayBuffer()
   const size = buf.byteLength
   if (size >= MIN_CACHE_BYTES && ctx?.waitUntil) {
@@ -107,6 +112,20 @@ export async function proxyService (request, ctx) {
     'x-cache-source': 'upstream-buffer'
   })
   return withDisposition(new Response(buf, { status: 200, headers: out }), download, platform, id, kind, ext)
+}
+
+// Heuristic: does this response look like real media (vs an expired-link
+// error page / JSON / tiny body)? For range hits we skip the size check
+// (the body is just a slice).
+function looksLikeMedia (resp, kind, isRange) {
+  if (!resp.ok || !resp.body) return false
+  const ct = (resp.headers.get('content-type') || '').toLowerCase()
+  if (ct.includes('text/html') || ct.includes('application/json') || ct.includes('text/xml') || ct.includes('text/plain')) return false
+  if (!isRange) {
+    const len = Number(resp.headers.get('content-length') || 0)
+    if (len && len < minSizeForKind(kind)) return false
+  }
+  return true
 }
 
 function wrapMedia (upstream, contentType, source) {

@@ -140,3 +140,40 @@ export function resolveKindUrl (minimal, kind) {
 }
 
 const pickUrl = (v) => (typeof v === 'string' ? v : (v?.url_list?.[0] ?? null))
+
+// All candidate CDN URLs for a proxy `kind`, in priority order. Douyin
+// often returns several mirrors (play_addr.url_list + per-bitrate
+// play_addr) and some are dead/expired/region-blocked — the proxy tries
+// them in turn and uses the first that actually serves media.
+export function mediaCandidates (platform, raw, kind) {
+  const out = []
+  const push = (arr) => { if (Array.isArray(arr)) for (const u of arr) if (typeof u === 'string' && u) out.push(u) }
+  const video = raw.video || {}
+
+  if (kind === 'nwm') {
+    push(video.play_addr?.url_list)
+    if (Array.isArray(video.bit_rate)) for (const b of video.bit_rate) push(b?.play_addr?.url_list)
+    const uri = video.play_addr?.uri
+    if (uri) out.push(`https://aweme.snssdk.com/aweme/v1/play/?video_id=${uri}&ratio=1080p&line=0`)
+  } else if (kind === 'wm') {
+    push(video.download_addr?.url_list)
+    push(video.play_addr?.url_list)
+  } else if (kind === 'cover') {
+    push(video.cover?.url_list)
+    push(video.origin_cover?.url_list)
+    if (platform === 'douyin') push(raw.images?.[0]?.url_list)
+    else push(raw.image_post_info?.images?.[0]?.display_image?.url_list)
+  } else if (/^image(wm)?\d+$/.test(kind)) {
+    const wm = kind.startsWith('imagewm')
+    const idx = Number(kind.replace(/^image(wm)?/, ''))
+    if (platform === 'douyin') {
+      const im = raw.images?.[idx]
+      push(wm ? im?.download_url_list : im?.url_list)
+    } else {
+      const im = raw.image_post_info?.images?.[idx]
+      push(wm ? im?.owner_watermark_image?.url_list : im?.display_image?.url_list)
+    }
+  }
+  // Prefer https, dedup, keep order.
+  return [...new Set(out.map(u => u.replace(/^http:/, 'https:')))]
+}

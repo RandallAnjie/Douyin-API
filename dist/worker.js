@@ -1238,24 +1238,6 @@ async function serveFromR2(bucket, request, key, contentType, minSize = 0) {
     }
   });
 }
-async function cachePopulateAside(bucket, ctx, key, rangeFetcher, fullFetcher, contentType) {
-  const userPromise = rangeFetcher();
-  if (bucket && ctx?.waitUntil) {
-    ctx.waitUntil(r2PutRetry(
-      bucket,
-      key,
-      // Re-fetch per attempt (the plane PUT 502s intermittently).
-      async () => {
-        const full = await fullFetcher();
-        if (!full || !full.ok || !full.body) throw new Error("aside fetch not ok");
-        return full.body;
-      },
-      { httpMetadata: { contentType: contentType || "application/octet-stream" } },
-      2
-    ));
-  }
-  return userPromise;
-}
 async function getJson(bucket, key, ttlSeconds) {
   if (!bucket || typeof bucket.get !== "function") return null;
   let obj;
@@ -1939,28 +1921,40 @@ async function hybridParseSingleVideo(ctx, url, minimal = false, refresh = false
   if (!minimal) return raw;
   return toMinimal(platform, id, raw);
 }
-function resolveKindUrl(minimal, kind) {
-  const isImageKind = /^image(wm)?\d+$/.test(kind);
-  if (kind === "nwm" || kind === "wm") {
-    const vd = minimal.video_data;
-    if (!vd) throw new HTTPException(404, { message: "No video for this resource" });
-    const url = kind === "nwm" ? vd.nwm_video_url_HQ || vd.nwm_video_url : vd.wm_video_url_HQ || vd.wm_video_url;
-    return { url, contentType: "video/mp4", ext: "mp4" };
-  }
-  if (kind === "cover") {
-    const url = minimal.cover_data?.cover?.url_list?.[0] || minimal.cover_data?.cover;
-    return { url: pickUrl(url), contentType: "image/jpeg", ext: "jpeg" };
-  }
-  if (isImageKind) {
+function mediaCandidates(platform, raw, kind) {
+  const out = [];
+  const push = (arr) => {
+    if (Array.isArray(arr)) {
+      for (const u of arr) if (typeof u === "string" && u) out.push(u);
+    }
+  };
+  const video = raw.video || {};
+  if (kind === "nwm") {
+    push(video.play_addr?.url_list);
+    if (Array.isArray(video.bit_rate)) for (const b of video.bit_rate) push(b?.play_addr?.url_list);
+    const uri = video.play_addr?.uri;
+    if (uri) out.push(`https://aweme.snssdk.com/aweme/v1/play/?video_id=${uri}&ratio=1080p&line=0`);
+  } else if (kind === "wm") {
+    push(video.download_addr?.url_list);
+    push(video.play_addr?.url_list);
+  } else if (kind === "cover") {
+    push(video.cover?.url_list);
+    push(video.origin_cover?.url_list);
+    if (platform === "douyin") push(raw.images?.[0]?.url_list);
+    else push(raw.image_post_info?.images?.[0]?.display_image?.url_list);
+  } else if (/^image(wm)?\d+$/.test(kind)) {
     const wm = kind.startsWith("imagewm");
     const idx = Number(kind.replace(/^image(wm)?/, ""));
-    const list = wm ? minimal.image_data?.watermark_image_list : minimal.image_data?.no_watermark_image_list;
-    if (!list || !list[idx]) throw new HTTPException(404, { message: `No image at index ${idx}` });
-    return { url: list[idx], contentType: "image/jpeg", ext: "jpeg" };
+    if (platform === "douyin") {
+      const im = raw.images?.[idx];
+      push(wm ? im?.download_url_list : im?.url_list);
+    } else {
+      const im = raw.image_post_info?.images?.[idx];
+      push(wm ? im?.owner_watermark_image?.url_list : im?.display_image?.url_list);
+    }
   }
-  throw new HTTPException(400, { message: `Unknown kind: ${kind}` });
+  return [...new Set(out.map((u) => u.replace(/^http:/, "https:")))];
 }
-var pickUrl = (v) => typeof v === "string" ? v : v?.url_list?.[0] ?? null;
 
 // src/utils/proxy-link.js
 function proxyBase(request, ctx) {
@@ -2247,34 +2241,50 @@ async function proxyService(request, ctx) {
     if (hit) return withDisposition(hit, download, platform, id, kind);
   }
   const { raw } = await fetchRawById(ctx, platform, id, refresh);
-  const minimal = toMinimal(platform, id, raw);
-  const { url: cdnUrl, contentType, ext } = resolveKindUrl(minimal, kind);
-  if (!cdnUrl) throw new HTTPException(404, { message: `No media url for kind=${kind}` });
+  const candidates = mediaCandidates(platform, raw, kind);
+  if (!candidates.length) throw new HTTPException(404, { message: `No media url for kind=${kind}` });
+  const isVideo = kind === "nwm" || kind === "wm";
+  const contentType = isVideo ? "video/mp4" : "image/jpeg";
+  const ext = isVideo ? "mp4" : "jpeg";
   const reqHeaders = {
     "User-Agent": platform === "douyin" ? ctx.config.douyin.userAgent : ctx.config.tiktok.userAgent,
     Referer: REFERER[platform]
   };
   const rangeHeader = request.headers.get("range");
-  if (rangeHeader && bucket) {
-    const resp = await cachePopulateAside(
-      bucket,
-      ctx,
-      key,
-      () => fetch(cdnUrl, { headers: { ...reqHeaders, range: rangeHeader } }).then((r) => wrapMedia(r, contentType, "upstream-range")),
-      () => fetch(cdnUrl, { headers: reqHeaders }),
-      contentType
-    );
-    return withDisposition(resp, download, platform, id, kind, ext);
+  let upstream = null;
+  let usedUrl = null;
+  for (const u of candidates) {
+    let r;
+    try {
+      r = await fetch(u, { headers: rangeHeader ? { ...reqHeaders, range: rangeHeader } : reqHeaders });
+    } catch {
+      continue;
+    }
+    if (looksLikeMedia(r, kind, !!rangeHeader)) {
+      upstream = r;
+      usedUrl = u;
+      break;
+    }
+    try {
+      await r.body?.cancel();
+    } catch {
+    }
   }
-  const upstream = await fetch(cdnUrl, { headers: rangeHeader ? { ...reqHeaders, range: rangeHeader } : reqHeaders });
-  if (!upstream.ok || !upstream.body) {
-    throw new HTTPException(502, { message: `Upstream media fetch failed (${upstream.status})` });
+  if (!upstream) {
+    throw new HTTPException(502, { message: `All ${candidates.length} candidate url(s) failed for kind=${kind}` });
   }
-  if (!bucket || rangeHeader) {
-    return withDisposition(wrapMedia(upstream, contentType, "upstream-plain"), download, platform, id, kind, ext);
+  if (rangeHeader) {
+    if (bucket && ctx?.waitUntil) {
+      ctx.waitUntil(r2PutRetry(bucket, key, async () => {
+        const f = await fetch(usedUrl, { headers: reqHeaders });
+        if (!f.ok || !f.body) throw new Error("aside fetch not ok");
+        return f.body;
+      }, { httpMetadata: { contentType } }, 2));
+    }
+    return withDisposition(wrapMedia(upstream, contentType, "upstream-range"), download, platform, id, kind, ext);
   }
   const cl = Number(upstream.headers.get("content-length") || 0);
-  if (cl > BUFFER_CAP) {
+  if (!bucket || cl > BUFFER_CAP) {
     return withDisposition(wrapMedia(upstream, contentType, "upstream-plain"), download, platform, id, kind, ext);
   }
   const buf = await upstream.arrayBuffer();
@@ -2290,6 +2300,16 @@ async function proxyService(request, ctx) {
     "x-cache-source": "upstream-buffer"
   });
   return withDisposition(new Response(buf, { status: 200, headers: out }), download, platform, id, kind, ext);
+}
+function looksLikeMedia(resp, kind, isRange) {
+  if (!resp.ok || !resp.body) return false;
+  const ct = (resp.headers.get("content-type") || "").toLowerCase();
+  if (ct.includes("text/html") || ct.includes("application/json") || ct.includes("text/xml") || ct.includes("text/plain")) return false;
+  if (!isRange) {
+    const len = Number(resp.headers.get("content-length") || 0);
+    if (len && len < minSizeForKind(kind)) return false;
+  }
+  return true;
 }
 function wrapMedia(upstream, contentType, source) {
   const out = new Headers();
