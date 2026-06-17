@@ -112,6 +112,36 @@ by `requireProxyAuth`), and are IP rate-limited (`rateLimitHit` prefers
 `GUEST_ENABLED`. The raw per-platform `/api/douyin|tiktok/*` endpoints
 and `/admin` stay token-only.
 
+## Aggregation platform (D1-backed, public reads)
+
+Beyond parsing, the worker is an in-site content index. All read pages
+are public (no token); only parsing/writes use guest+auth.
+
+- `/discover` + `/api/discover` — recently parsed works (hot/recent).
+- `/work?platform=&id=` + `/api/work` — one work: author, publish time,
+  tags (话题 chips), BGM, stats KPIs, a stats line chart from
+  `stats_history`, and 热门评论 (`/api/comments`).
+- `/search?q=` + `/api/search` — LIKE over description/author/tags.
+- `/author?platform=&id=` + `/api/author` — profile, follower trend
+  (`author_stats_history`), and the author's works grid.
+- `/api/comments?platform=&id=` — cached comments (D1); lazily populated
+  (rate-limited) on first read, and refreshed async on every parse (6h TTL).
+
+D1 schema lives in `src/utils/db.js` `ensureSchema` (queries + authors +
+stats_history + author_stats_history + comments + kv_meta). `ingest.js` is
+the single fetch→map→logQuery path shared by the parser and cron.
+
+### Cron (`POST /__edge_cron`)
+
+RandallFlare convention: the edge agent POSTs `/__edge_cron` with an
+`X-Edge-Cron-Expression` header and **no token** (see memory
+`project_bigrandall_cron_convention`). Configure the schedule in the
+worker backend. The handler is throttled (50s/expr), bounded (8 works/run)
+and idempotent: it re-parses the oldest works to append fresh
+`stats_history` snapshots (grows the line charts) + refreshes comments.
+Douyin has no minable public popular feed, so library growth is organic;
+the Bilibili worker additionally grows from its popular feed.
+
 ## Conventions
 
 - Cookies/secrets only from env (`DOUYIN_COOKIE`, `TIKTOK_COOKIE`,
