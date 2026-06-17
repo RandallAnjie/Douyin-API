@@ -136,7 +136,7 @@ footer a{color:var(--muted)}
   <p id=status class=status>等待口令</p>
   <div id=out></div>
 
-  <footer>自托管于 RandallFlare · <a href="/docs">接口文档</a></footer>
+  <footer>自托管于 RandallFlare · <a href="/admin">档案</a> · <a href="/docs">接口文档</a></footer>
 </main>
 
 <script>
@@ -230,6 +230,10 @@ footer a{color:var(--muted)}
   pasteBox.addEventListener('paste',function(){setTimeout(function(){parse(pasteBox.value)},0)})
   goBtn.addEventListener('click',function(){parse(pasteBox.value)})
   pasteBox.addEventListener('keydown',function(e){if((e.metaKey||e.ctrlKey)&&e.key==='Enter')parse(pasteBox.value)})
+
+  // Prefill + auto-parse from ?u= (used by the admin "重解" link).
+  var pre=new URLSearchParams(location.search).get('u')
+  if(pre){pasteBox.value=pre;if((keyInput.value||'').trim())parse(pre)}
 })();
 </script>
 </body>

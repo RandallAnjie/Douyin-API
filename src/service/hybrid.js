@@ -2,8 +2,9 @@
 import { HTTPException } from '../utils/http-exception.js'
 import { jsonResponse } from '../utils/respond.js'
 import { requireAuth } from '../utils/auth.js'
-import { hybridParseSingleVideo } from '../hybrid/crawler.js'
-import { rewriteMinimalToProxy } from '../utils/proxy-link.js'
+import { hybridParseSingleVideo, resolvePlatformId, fetchRawById, toMinimal } from '../hybrid/crawler.js'
+import { rewriteMinimalToProxy, proxyLink } from '../utils/proxy-link.js'
+import { logQuery } from '../utils/db.js'
 
 const PLATFORM = 'hybrid'
 const truthy = (v) => ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase())
@@ -19,7 +20,25 @@ export async function hybridService (route, request, ctx) {
     // ?proxy=1 rewrites media URLs to cached /proxy self-links (needs
     // minimal=true since the unified schema is what carries the urls).
     const proxy = truthy(url.searchParams.get('proxy') ?? 'false')
-    let data = await hybridParseSingleVideo(ctx, target, minimal, refresh)
+
+    const { platform, id } = await resolvePlatformId(target)
+    const { raw } = await fetchRawById(ctx, platform, id, refresh)
+    const min = toMinimal(platform, id, raw)
+
+    // Log to the D1 query history (best-effort). Store proxied cover/play
+    // links so /admin can render them directly.
+    await logQuery(ctx, {
+      platform,
+      video_id: id,
+      type: min.type,
+      author: (min.author && min.author.nickname) || null,
+      description: min.desc || null,
+      original_url: target,
+      cover: proxyLink(request, ctx, platform, id, 'cover'),
+      play: min.type === 'video' ? proxyLink(request, ctx, platform, id, 'nwm') : null
+    })
+
+    let data = minimal ? min : raw
     if (minimal && proxy) data = rewriteMinimalToProxy(data, request, ctx)
     return jsonResponse(data, { router: 'hybrid/video_data', params: { url: target, minimal, proxy } })
   }

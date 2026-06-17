@@ -13,6 +13,7 @@ import douyinWebService from './service/douyin.js'
 import { tiktokWebService, tiktokAppService } from './service/tiktok.js'
 import { hybridService, downloadService } from './service/hybrid.js'
 import { proxyService } from './service/proxy.js'
+import { adminPageService, adminRecentService } from './service/admin.js'
 import appService from './service/app.js'
 import docsService from './service/docs.js'
 import { HTTPException } from './utils/http-exception.js'
@@ -32,6 +33,12 @@ export async function router (request, ctx) {
   }
   if (pathname === '/docs' && request.method === 'GET') {
     return docsService(request, ctx)
+  }
+  if (pathname === '/admin' && request.method === 'GET') {
+    return adminPageService(request, ctx)
+  }
+  if (pathname === '/api/admin/recent' && request.method === 'GET') {
+    return adminRecentService(request, ctx)
   }
 
   if (pathname.startsWith('/api/douyin/web/')) {

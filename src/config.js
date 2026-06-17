@@ -45,6 +45,9 @@ export function buildConfig (env) {
     // and parsed video metadata is cached as JSON files under meta/.
     // Absent (null) → everything still works, just uncached.
     mediaR2: env.DOUYIN_R2 || env.MEDIA_R2 || null,
+    // D1 database binding for the query log (recent parses shown in
+    // /admin). Absent (null) → logging + admin degrade to no-ops.
+    d1: env.DOUYIN_D1 || env.DB || null,
     cache: {
       // Metadata JSON freshness in seconds (default 1h). ?refresh=1
       // on a request bypasses + repopulates.
