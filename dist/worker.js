@@ -1367,6 +1367,37 @@ async function r2PutMultipart(bucket, key, stream, opts = {}, partSize = PART_SI
     return false;
   }
 }
+async function warmUrl(ctx, bucket, key, url, headers2, contentType, { lockTtl = 300 } = {}) {
+  if (!bucket || !url) return;
+  try {
+    const h = await bucket.head(key);
+    if (h && (Number(h.size) || 0) > 256) return;
+  } catch {
+  }
+  const kv = ctx?.config?.kv;
+  const lock = `warm:${key}`;
+  try {
+    if (kv) {
+      if (await kv.get(lock)) return;
+      await kv.put(lock, "1", { expirationTtl: lockTtl });
+    }
+  } catch {
+  }
+  const job = (async () => {
+    try {
+      const f = await fetch(url, { headers: headers2 });
+      if (!f.ok || !f.body) return;
+      await r2PutMultipart(bucket, key, f.body, { httpMetadata: { contentType } });
+    } catch (e) {
+      try {
+        console.error("[r2] warm failed", key, e?.message || e);
+      } catch {
+      }
+    }
+  })();
+  if (ctx?.waitUntil) ctx.waitUntil(job);
+  else await job;
+}
 async function r2PutRetry(bucket, key, makeBody, opts, tries = 4) {
   for (let i = 0; i < tries; i++) {
     try {
@@ -2491,7 +2522,26 @@ async function rateLimitD1(db, ip, limit, windowSec) {
 }
 
 // src/utils/ingest.js
-async function ingestWork(ctx, request, platform, id, target, refresh = false) {
+function warmMedia(ctx, platform, id, raw, min, warmVideo) {
+  const bucket = ctx.config.mediaR2;
+  if (!bucket) return;
+  const headers2 = {
+    "User-Agent": platform === "douyin" ? ctx.config.douyin.userAgent : ctx.config.tiktok.userAgent,
+    Referer: platform === "douyin" ? "https://www.douyin.com/" : "https://www.tiktok.com/"
+  };
+  const kinds = ["cover", "avatar"];
+  if (min.type === "image" && min.image_data) {
+    min.image_data.no_watermark_image_list.forEach((_, i) => kinds.push(`image${i}`));
+  } else if (warmVideo) {
+    kinds.push("nwm");
+  }
+  for (const kind of kinds) {
+    const cands = mediaCandidates(platform, raw, kind);
+    const ct = kind === "nwm" ? "video/mp4" : "image/jpeg";
+    if (cands.length) warmUrl(ctx, bucket, mediaKey(platform, id, kind), cands[0], headers2, ct);
+  }
+}
+async function ingestWork(ctx, request, platform, id, target, refresh = false, opts = {}) {
   const { raw, cached } = await fetchRawById(ctx, platform, id, refresh);
   const min = toMinimal(platform, id, raw);
   const a = min.author || {};
@@ -2527,6 +2577,7 @@ async function ingestWork(ctx, request, platform, id, target, refresh = false) {
       images: min.type === "image" && min.image_data ? min.image_data.no_watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `image${i}`)) : void 0
     }
   });
+  warmMedia(ctx, platform, id, raw, min, opts.warmVideo !== false);
   return { raw, min, cached };
 }
 
@@ -2710,6 +2761,7 @@ async function proxyService(request, ctx) {
   }
   const openFromZero = /^bytes=0-$/.test((rangeHeader || "").trim());
   if (rangeHeader && !openFromZero) {
+    if (bucket) warmUrl(ctx, bucket, key, usedUrl, reqHeaders, contentType);
     return withDisposition(wrapMedia(upstream, contentType, "upstream-range"), download, platform, id, kind, ext);
   }
   if (openFromZero) {
@@ -3598,7 +3650,7 @@ async function cronService(request, ctx) {
     const errors = [];
     for (const w of stale) {
       try {
-        await ingestWork(ctx, request, w.platform, w.video_id, w.original_url, true);
+        await ingestWork(ctx, request, w.platform, w.video_id, w.original_url, true, { warmVideo: false });
         await maybeFetchComments(ctx, w.platform, w.video_id);
         ok++;
       } catch (e) {

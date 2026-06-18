@@ -10,7 +10,7 @@
 import { HTTPException } from '../utils/http-exception.js'
 import { requireProxyAuth } from '../utils/auth.js'
 import { fetchRawById, mediaCandidates } from '../hybrid/crawler.js'
-import { serveFromR2, teeIntoCache, r2PutRetry, r2PutMultipart, mediaKey } from '../utils/r2cache.js'
+import { serveFromR2, teeIntoCache, r2PutRetry, r2PutMultipart, warmUrl, mediaKey } from '../utils/r2cache.js'
 
 // Media at or under this is buffered so the R2 write can retry from
 // memory (the plane PUT 502s intermittently). A *known* larger body is
@@ -97,6 +97,9 @@ export async function proxyService (request, ctx) {
   // post-response time budget.
   const openFromZero = /^bytes=0-$/.test((rangeHeader || '').trim())
   if (rangeHeader && !openFromZero) {
+    // Genuine sub-range (seek). Serve the slice now, and warm the WHOLE
+    // file into R2 in the background (deduped) so later reads hit cache.
+    if (bucket) warmUrl(ctx, bucket, key, usedUrl, reqHeaders, contentType)
     return withDisposition(wrapMedia(upstream, contentType, 'upstream-range'), download, platform, id, kind, ext)
   }
   if (openFromZero) {
