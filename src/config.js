@@ -57,8 +57,11 @@ export function buildConfig (env) {
     // OFF by default to avoid hammering walls hourly. Flip on (env=1) if you
     // supply a full logged-in cookie that clears risk control.
     cron: {
+      // Douyin search hits risk-control 2483 (cookie can't clear it) → off
+      // by default. TikTok trending feed works (ingested directly from the
+      // batch) → on by default; set TIKTOK_HOT_CRON=0 to disable.
       douyinHot: env.DOUYIN_HOT_CRON === '1',
-      tiktokHot: env.TIKTOK_HOT_CRON === '1'
+      tiktokHot: env.TIKTOK_HOT_CRON !== '0'
     },
     cache: {
       // Metadata JSON freshness in seconds (default 1h). ?refresh=1

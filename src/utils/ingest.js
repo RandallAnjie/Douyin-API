@@ -31,7 +31,9 @@ function warmMedia (ctx, platform, id, raw, min, warmVideo) {
 }
 
 export async function ingestWork (ctx, request, platform, id, target, refresh = false, opts = {}) {
-  const { raw, cached } = await fetchRawById(ctx, platform, id, refresh)
+  // opts.raw lets callers (e.g. cron with a trending-feed batch) pass the
+  // already-fetched record so we don't re-fetch it per id (avoids 429s).
+  const { raw, cached } = opts.raw ? { raw: opts.raw, cached: false } : await fetchRawById(ctx, platform, id, refresh)
   const min = toMinimal(platform, id, raw)
   const a = min.author || {}
   const s = min.statistics || {}

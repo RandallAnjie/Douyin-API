@@ -2569,7 +2569,7 @@ function warmMedia(ctx, platform, id, raw, min, warmVideo) {
   }
 }
 async function ingestWork(ctx, request, platform, id, target, refresh = false, opts = {}) {
-  const { raw, cached } = await fetchRawById(ctx, platform, id, refresh);
+  const { raw, cached } = opts.raw ? { raw: opts.raw, cached: false } : await fetchRawById(ctx, platform, id, refresh);
   const min = toMinimal(platform, id, raw);
   const a = min.author || {};
   const s = min.statistics || {};
@@ -3684,7 +3684,7 @@ async function cronService(request, ctx) {
         const id = aweme?.aweme_id;
         if (!id) continue;
         try {
-          await ingestWork(ctx, request, "tiktok", id, `https://www.tiktok.com/@/video/${id}`, false);
+          await ingestWork(ctx, request, "tiktok", id, `https://www.tiktok.com/@/video/${id}`, false, { raw: aweme });
           tiktok++;
         } catch (e) {
           errors.push(`tiktok ${id} ${e?.message || e}`);
@@ -4243,8 +4243,11 @@ function buildConfig(env) {
     // OFF by default to avoid hammering walls hourly. Flip on (env=1) if you
     // supply a full logged-in cookie that clears risk control.
     cron: {
+      // Douyin search hits risk-control 2483 (cookie can't clear it) → off
+      // by default. TikTok trending feed works (ingested directly from the
+      // batch) → on by default; set TIKTOK_HOT_CRON=0 to disable.
       douyinHot: env.DOUYIN_HOT_CRON === "1",
-      tiktokHot: env.TIKTOK_HOT_CRON === "1"
+      tiktokHot: env.TIKTOK_HOT_CRON !== "0"
     },
     cache: {
       // Metadata JSON freshness in seconds (default 1h). ?refresh=1

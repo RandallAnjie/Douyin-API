@@ -46,7 +46,8 @@ export async function cronService (request, ctx) {
         const id = aweme?.aweme_id
         if (!id) continue
         try {
-          await ingestWork(ctx, request, 'tiktok', id, `https://www.tiktok.com/@/video/${id}`, false)
+          // Ingest the feed object directly — no per-id re-fetch (avoids 429).
+          await ingestWork(ctx, request, 'tiktok', id, `https://www.tiktok.com/@/video/${id}`, false, { raw: aweme })
           tiktok++
         } catch (e) { errors.push(`tiktok ${id} ${e?.message || e}`) }
       }
