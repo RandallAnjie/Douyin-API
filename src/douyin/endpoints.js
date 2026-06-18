@@ -6,6 +6,8 @@ const LIVE2 = 'https://webcast.amemv.com'
 
 export const DouyinEndpoints = {
   POST_DETAIL: `${DOUYIN}/aweme/v1/web/aweme/detail/`,
+  GENERAL_SEARCH: `${DOUYIN}/aweme/v1/web/general/search/single/`,
+  HOT_SEARCH: `${DOUYIN}/aweme/v1/web/hot/search/list/`,
   USER_POST: `${DOUYIN}/aweme/v1/web/aweme/post/`,
   USER_FAVORITE_A: `${DOUYIN}/aweme/v1/web/aweme/favorite/`,
   USER_DETAIL: `${DOUYIN}/aweme/v1/web/user/profile/other/`,

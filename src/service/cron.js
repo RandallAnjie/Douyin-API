@@ -2,57 +2,91 @@
 // the edge agent calls this on the operator's schedule with an
 // X-Edge-Cron-Expression header and NO token). Must respond 2xx.
 //
-// Job: pull each platform's hot ranking and ingest + DOWNLOAD (cache media
-// into R2) the top items — growing the in-site library from what's
-// trending. It does NOT refresh already-stored works.
+// Grows the in-site library from what's trending and DOWNLOADS media into
+// R2. It does NOT refresh on a fixed schedule, but re-ingesting an item
+// that's already cached just updates its info (warmUrl skips the download).
 //
-//   - TikTok: the app trending feed (FYP) → real hot videos.
-//   - Douyin: its public "hot" endpoint only returns trending KEYWORDS,
-//     not videos, and the web has no minable hot-video feed without a
-//     fragile search-per-keyword flow — so Douyin growth stays organic
-//     (parsed on demand). Logged as skipped.
+//   - TikTok: app trending feed (FYP) → real hot videos.
+//   - Douyin: the hot board only returns trending KEYWORDS, so we search
+//     each top keyword and take the first few videos.
 //
-// Safe by being throttled + bounded + idempotent.
+// Throttled + bounded + idempotent.
 import { metaGet, metaSet } from '../utils/db.js'
 import { ingestWork } from '../utils/ingest.js'
 import * as tiktokApp from '../tiktok/app/crawler.js'
+import * as douyin from '../douyin/crawler.js'
 
 const THROTTLE_MS = 50 * 1000
-const HOT_BATCH = 10
+const TT_BATCH = 10
+const DY_KEYWORDS = 3
+const DY_PER_KEYWORD = 5
 
 export async function cronService (request, ctx) {
+  const url = new URL(request.url)
+  const sync = url.searchParams.get('sync') === '1' && url.searchParams.get('token') === ctx.config.auth.token
   const expr = request.headers.get('x-edge-cron-expression') || 'default'
   const last = await metaGet(ctx, `cron:last:${expr}`)
   const now = Date.now()
-  if (last && (now - last.ts) < THROTTLE_MS) {
+  if (last && (now - last.ts) < THROTTLE_MS && !sync) {
     return json({ code: 200, skipped: 'throttled', expr })
   }
   await metaSet(ctx, `cron:last:${expr}`, now)
   if (!ctx.config.d1) return json({ code: 200, skipped: 'no-d1', expr })
 
   const run = (async () => {
-    let grown = 0
+    let tiktok = 0
+    let dy = 0
     const errors = []
-    // TikTok trending feed → ingest + download.
+
+    // TikTok trending feed.
     try {
-      const feed = await tiktokApp.fetchTrendingFeed(ctx, HOT_BATCH)
+      const feed = await tiktokApp.fetchTrendingFeed(ctx, TT_BATCH)
       for (const aweme of feed) {
-        if (grown >= HOT_BATCH) break
+        if (tiktok >= TT_BATCH) break
         const id = aweme?.aweme_id
         if (!id) continue
         try {
           await ingestWork(ctx, request, 'tiktok', id, `https://www.tiktok.com/@/video/${id}`, false)
-          grown++
+          tiktok++
         } catch (e) { errors.push(`tiktok ${id} ${e?.message || e}`) }
       }
     } catch (e) { errors.push(`tiktok-feed ${e?.message || e}`) }
+
+    // Douyin: hot keywords -> search -> top N videos each.
+    try {
+      const hot = await douyin.fetchHotSearchList(ctx)
+      const words = (hot?.data?.word_list || []).map(w => w.word).filter(Boolean).slice(0, DY_KEYWORDS)
+      for (const kw of words) {
+        try {
+          const sr = await douyin.fetchGeneralSearch(ctx, kw, 0, 10)
+          if (sr?.status_code && sr.status_code !== 0) {
+            errors.push(`search "${kw}" status_code ${sr.status_code} (risk control?)`)
+            continue
+          }
+          const arr = Array.isArray(sr?.data) ? sr.data : (sr?.data?.data || [])
+          const ids = arr
+            .map(x => x.aweme_info?.aweme_id || x.aweme?.aweme_id || x.aweme_id)
+            .filter(Boolean)
+            .slice(0, DY_PER_KEYWORD)
+          for (const id of ids) {
+            try {
+              await ingestWork(ctx, request, 'douyin', id, `https://www.douyin.com/video/${id}`, false)
+              dy++
+            } catch (e) { errors.push(`douyin ${id} ${e?.message || e}`) }
+          }
+        } catch (e) { errors.push(`search "${kw}" ${e?.message || e}`) }
+      }
+    } catch (e) { errors.push(`douyin-hot ${e?.message || e}`) }
+
     await metaSet(ctx, `cron:hot:${expr}`, now)
-    return { grown, douyin: 'skipped (no public hot-video feed)', errors: errors.slice(0, 5) }
+    return { tiktok, douyin: dy, errors: errors.slice(0, 6) }
   })()
 
-  if (ctx.waitUntil) {
+  // ?sync=1 (master token) awaits the batch and returns the result — for
+  // manually checking what the cron actually fetched.
+  if (ctx.waitUntil && !sync) {
     ctx.waitUntil(run)
-    return json({ code: 200, expr, started: true, hotBatch: HOT_BATCH })
+    return json({ code: 200, expr, started: true, ttBatch: TT_BATCH, dyKeywords: DY_KEYWORDS })
   }
   return json({ code: 200, expr, ...(await run) })
 }

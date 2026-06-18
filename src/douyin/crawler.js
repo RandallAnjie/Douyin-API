@@ -84,7 +84,35 @@ export function fetchUserLikeVideos (ctx, secUserId, maxCursor, count) {
   return aBogusGet(ctx, EP.USER_FAVORITE_A, params)
 }
 
+// General keyword search (a_bogus). Returns data.data[] of mixed cards;
+// video cards carry aweme_info.aweme_id. Used by cron to turn hot-search
+// KEYWORDS into actual videos. Needs the operator cookie; risk-control may
+// reject it (caught by the caller).
+export function fetchGeneralSearch (ctx, keyword, offset = 0, count = 10) {
+  const params = {
+    ...baseRequestParams(genFalseMsToken()),
+    search_channel: 'aweme_general',
+    enable_history: '1',
+    keyword,
+    search_source: 'normal_search',
+    query_correct_type: '1',
+    is_filter_search: '0',
+    from_group_id: '',
+    offset: String(offset),
+    count: String(count),
+    need_filter_settings: '1',
+    list_type: 'multi'
+  }
+  return aBogusGet(ctx, EP.GENERAL_SEARCH, params)
+}
+
 // --- X-Bogus endpoints ---
+
+// Hot-search board (trending KEYWORDS, not videos). X-Bogus.
+export function fetchHotSearchList (ctx) {
+  const params = { ...baseRequestParams(genFalseMsToken()), detail_list: '1' }
+  return xBogusGet(ctx, EP.HOT_SEARCH, params)
+}
 
 async function xBogusGet (ctx, baseUrl, params) {
   const paramStr = rawJoin(params)

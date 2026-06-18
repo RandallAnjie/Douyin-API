@@ -975,6 +975,8 @@ var LIVE = "https://live.douyin.com";
 var LIVE2 = "https://webcast.amemv.com";
 var DouyinEndpoints = {
   POST_DETAIL: `${DOUYIN}/aweme/v1/web/aweme/detail/`,
+  GENERAL_SEARCH: `${DOUYIN}/aweme/v1/web/general/search/single/`,
+  HOT_SEARCH: `${DOUYIN}/aweme/v1/web/hot/search/list/`,
   USER_POST: `${DOUYIN}/aweme/v1/web/aweme/post/`,
   USER_FAVORITE_A: `${DOUYIN}/aweme/v1/web/aweme/favorite/`,
   USER_DETAIL: `${DOUYIN}/aweme/v1/web/user/profile/other/`,
@@ -1042,6 +1044,27 @@ function fetchUserPostVideos(ctx, secUserId, maxCursor, count) {
 function fetchUserLikeVideos(ctx, secUserId, maxCursor, count) {
   const params = { ...baseRequestParams(""), max_cursor: String(maxCursor), count: String(count), sec_user_id: secUserId };
   return aBogusGet(ctx, DouyinEndpoints.USER_FAVORITE_A, params);
+}
+function fetchGeneralSearch(ctx, keyword, offset = 0, count = 10) {
+  const params = {
+    ...baseRequestParams(genFalseMsToken()),
+    search_channel: "aweme_general",
+    enable_history: "1",
+    keyword,
+    search_source: "normal_search",
+    query_correct_type: "1",
+    is_filter_search: "0",
+    from_group_id: "",
+    offset: String(offset),
+    count: String(count),
+    need_filter_settings: "1",
+    list_type: "multi"
+  };
+  return aBogusGet(ctx, DouyinEndpoints.GENERAL_SEARCH, params);
+}
+function fetchHotSearchList(ctx) {
+  const params = { ...baseRequestParams(genFalseMsToken()), detail_list: "1" };
+  return xBogusGet(ctx, DouyinEndpoints.HOT_SEARCH, params);
 }
 async function xBogusGet(ctx, baseUrl, params) {
   const paramStr = rawJoin(params);
@@ -3634,28 +3657,33 @@ h2{font-size:15px;margin:30px 0 12px;font-family:var(--serif);letter-spacing:.04
 
 // src/service/cron.js
 var THROTTLE_MS = 50 * 1e3;
-var HOT_BATCH = 10;
+var TT_BATCH = 10;
+var DY_KEYWORDS = 3;
+var DY_PER_KEYWORD = 5;
 async function cronService(request, ctx) {
+  const url = new URL(request.url);
+  const sync = url.searchParams.get("sync") === "1" && url.searchParams.get("token") === ctx.config.auth.token;
   const expr = request.headers.get("x-edge-cron-expression") || "default";
   const last = await metaGet(ctx, `cron:last:${expr}`);
   const now = Date.now();
-  if (last && now - last.ts < THROTTLE_MS) {
+  if (last && now - last.ts < THROTTLE_MS && !sync) {
     return json({ code: 200, skipped: "throttled", expr });
   }
   await metaSet(ctx, `cron:last:${expr}`, now);
   if (!ctx.config.d1) return json({ code: 200, skipped: "no-d1", expr });
   const run = (async () => {
-    let grown = 0;
+    let tiktok = 0;
+    let dy = 0;
     const errors = [];
     try {
-      const feed = await fetchTrendingFeed(ctx, HOT_BATCH);
+      const feed = await fetchTrendingFeed(ctx, TT_BATCH);
       for (const aweme of feed) {
-        if (grown >= HOT_BATCH) break;
+        if (tiktok >= TT_BATCH) break;
         const id = aweme?.aweme_id;
         if (!id) continue;
         try {
           await ingestWork(ctx, request, "tiktok", id, `https://www.tiktok.com/@/video/${id}`, false);
-          grown++;
+          tiktok++;
         } catch (e) {
           errors.push(`tiktok ${id} ${e?.message || e}`);
         }
@@ -3663,12 +3691,39 @@ async function cronService(request, ctx) {
     } catch (e) {
       errors.push(`tiktok-feed ${e?.message || e}`);
     }
+    try {
+      const hot = await fetchHotSearchList(ctx);
+      const words = (hot?.data?.word_list || []).map((w) => w.word).filter(Boolean).slice(0, DY_KEYWORDS);
+      for (const kw of words) {
+        try {
+          const sr = await fetchGeneralSearch(ctx, kw, 0, 10);
+          if (sr?.status_code && sr.status_code !== 0) {
+            errors.push(`search "${kw}" status_code ${sr.status_code} (risk control?)`);
+            continue;
+          }
+          const arr = Array.isArray(sr?.data) ? sr.data : sr?.data?.data || [];
+          const ids = arr.map((x) => x.aweme_info?.aweme_id || x.aweme?.aweme_id || x.aweme_id).filter(Boolean).slice(0, DY_PER_KEYWORD);
+          for (const id of ids) {
+            try {
+              await ingestWork(ctx, request, "douyin", id, `https://www.douyin.com/video/${id}`, false);
+              dy++;
+            } catch (e) {
+              errors.push(`douyin ${id} ${e?.message || e}`);
+            }
+          }
+        } catch (e) {
+          errors.push(`search "${kw}" ${e?.message || e}`);
+        }
+      }
+    } catch (e) {
+      errors.push(`douyin-hot ${e?.message || e}`);
+    }
     await metaSet(ctx, `cron:hot:${expr}`, now);
-    return { grown, douyin: "skipped (no public hot-video feed)", errors: errors.slice(0, 5) };
+    return { tiktok, douyin: dy, errors: errors.slice(0, 6) };
   })();
-  if (ctx.waitUntil) {
+  if (ctx.waitUntil && !sync) {
     ctx.waitUntil(run);
-    return json({ code: 200, expr, started: true, hotBatch: HOT_BATCH });
+    return json({ code: 200, expr, started: true, ttBatch: TT_BATCH, dyKeywords: DY_KEYWORDS });
   }
   return json({ code: 200, expr, ...await run });
 }
