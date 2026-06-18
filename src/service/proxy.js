@@ -10,7 +10,7 @@
 import { HTTPException } from '../utils/http-exception.js'
 import { requireProxyAuth } from '../utils/auth.js'
 import { fetchRawById, mediaCandidates } from '../hybrid/crawler.js'
-import { serveFromR2, teeIntoCache, r2PutRetry, mediaKey } from '../utils/r2cache.js'
+import { serveFromR2, teeIntoCache, r2PutRetry, r2PutMultipart, mediaKey } from '../utils/r2cache.js'
 
 // Media at or under this is buffered so the R2 write can retry from
 // memory (the plane PUT 502s intermittently). A *known* larger body is
@@ -94,11 +94,14 @@ export async function proxyService (request, ctx) {
   // hit R2 without re-downloading the whole file on every seek.
   if (rangeHeader) {
     if (bucket && ctx?.waitUntil && rangeStartOf(rangeHeader) === 0) {
-      ctx.waitUntil(r2PutRetry(bucket, key, async () => {
-        const f = await fetch(usedUrl, { headers: reqHeaders })
-        if (!f.ok || !f.body) throw new Error('warm fetch not ok')
-        return f.body
-      }, { httpMetadata: { contentType } }, 1))
+      ctx.waitUntil((async () => {
+        try {
+          const f = await fetch(usedUrl, { headers: reqHeaders })
+          if (!f.ok || !f.body) return
+          // Videos are large → multipart (single PUT exceeds the body cap).
+          await r2PutMultipart(bucket, key, f.body, { httpMetadata: { contentType } })
+        } catch (e) { try { console.error('[r2] warm failed', key, e?.message || e) } catch {} }
+      })())
     }
     return withDisposition(wrapMedia(upstream, contentType, 'upstream-range'), download, platform, id, kind, ext)
   }
