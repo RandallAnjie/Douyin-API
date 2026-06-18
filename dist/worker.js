@@ -2648,7 +2648,7 @@ async function downloadService(request, ctx) {
 }
 
 // src/service/proxy.js
-var BUFFER_CAP = 20 * 1024 * 1024;
+var BUFFER_CAP = 8 * 1024 * 1024;
 var MIN_CACHE_BYTES = 1024;
 var minSizeForKind = (kind) => kind === "nwm" || kind === "wm" ? 1e4 : 256;
 var REFERER = { douyin: "https://www.douyin.com/", tiktok: "https://www.tiktok.com/" };
@@ -2708,22 +2708,23 @@ async function proxyService(request, ctx) {
   if (!upstream) {
     throw new HTTPException(502, { message: `All ${candidates.length} candidate url(s) failed for kind=${kind}` });
   }
-  if (rangeHeader) {
-    if (bucket && ctx?.waitUntil && rangeStartOf(rangeHeader) === 0) {
-      ctx.waitUntil((async () => {
-        try {
-          const f = await fetch(usedUrl, { headers: reqHeaders });
-          if (!f.ok || !f.body) return;
-          await r2PutMultipart(bucket, key, f.body, { httpMetadata: { contentType } });
-        } catch (e) {
-          try {
-            console.error("[r2] warm failed", key, e?.message || e);
-          } catch {
-          }
-        }
-      })());
-    }
+  const openFromZero = /^bytes=0-$/.test((rangeHeader || "").trim());
+  if (rangeHeader && !openFromZero) {
     return withDisposition(wrapMedia(upstream, contentType, "upstream-range"), download, platform, id, kind, ext);
+  }
+  if (openFromZero) {
+    try {
+      await upstream.body?.cancel();
+    } catch {
+    }
+    try {
+      upstream = await fetch(usedUrl, { headers: reqHeaders });
+    } catch {
+      upstream = null;
+    }
+    if (!upstream || !looksLikeMedia(upstream, kind, false)) {
+      throw new HTTPException(502, { message: `re-fetch failed for kind=${kind}` });
+    }
   }
   if (!bucket) {
     return withDisposition(wrapMedia(upstream, contentType, "upstream-plain"), download, platform, id, kind, ext);
@@ -2745,10 +2746,6 @@ async function proxyService(request, ctx) {
     "x-cache-source": "upstream-buffer"
   });
   return withDisposition(new Response(buf, { status: 200, headers: out }), download, platform, id, kind, ext);
-}
-function rangeStartOf(header) {
-  const m = String(header || "").match(/bytes=(\d+)-/);
-  return m ? Number(m[1]) : 0;
 }
 function looksLikeMedia(resp, kind, isRange) {
   if (!resp.ok || !resp.body) return false;

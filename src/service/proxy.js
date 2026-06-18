@@ -15,7 +15,7 @@ import { serveFromR2, teeIntoCache, r2PutRetry, r2PutMultipart, mediaKey } from 
 // Media at or under this is buffered so the R2 write can retry from
 // memory (the plane PUT 502s intermittently). A *known* larger body is
 // streamed straight through without caching (don't relay+buffer 80 MB).
-const BUFFER_CAP = 20 * 1024 * 1024
+const BUFFER_CAP = 8 * 1024 * 1024
 // Don't cache a body smaller than this — it's almost certainly an
 // upstream error page, not real media (guards against poisoning the
 // cache with e.g. a 16-byte body served forever after).
@@ -89,21 +89,22 @@ export async function proxyService (request, ctx) {
     throw new HTTPException(502, { message: `All ${candidates.length} candidate url(s) failed for kind=${kind}` })
   }
 
-  // Range request → serve the working slice now. Warm the full body into
-  // R2 ONCE, on the initial bytes=0- probe only, so later range reads
-  // hit R2 without re-downloading the whole file on every seek.
-  if (rangeHeader) {
-    if (bucket && ctx?.waitUntil && rangeStartOf(rangeHeader) === 0) {
-      ctx.waitUntil((async () => {
-        try {
-          const f = await fetch(usedUrl, { headers: reqHeaders })
-          if (!f.ok || !f.body) return
-          // Videos are large → multipart (single PUT exceeds the body cap).
-          await r2PutMultipart(bucket, key, f.body, { httpMetadata: { contentType } })
-        } catch (e) { try { console.error('[r2] warm failed', key, e?.message || e) } catch {} }
-      })())
-    }
+  // A genuine sub-range (seek, e.g. bytes=5000000-) just gets the slice;
+  // the cache is filled by full / open-ended passes, after which R2 answers
+  // ranges directly. An OPEN-ended range from 0 (bytes=0-, what a <video>
+  // sends first) is treated as a full GET so we can tee it into R2 DURING
+  // the transfer — reliable, unlike a background warm that outlives the
+  // post-response time budget.
+  const openFromZero = /^bytes=0-$/.test((rangeHeader || '').trim())
+  if (rangeHeader && !openFromZero) {
     return withDisposition(wrapMedia(upstream, contentType, 'upstream-range'), download, platform, id, kind, ext)
+  }
+  if (openFromZero) {
+    try { await upstream.body?.cancel() } catch {}
+    try { upstream = await fetch(usedUrl, { headers: reqHeaders }) } catch { upstream = null }
+    if (!upstream || !looksLikeMedia(upstream, kind, false)) {
+      throw new HTTPException(502, { message: `re-fetch failed for kind=${kind}` })
+    }
   }
 
   if (!bucket) {
