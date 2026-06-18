@@ -1443,6 +1443,19 @@ function feedParams(awemeId) {
     aweme_id: awemeId
   };
 }
+async function fetchTrendingFeed(ctx, count = 12) {
+  const params = { ...feedParams(""), count: String(count) };
+  delete params.aweme_id;
+  const url = `${HOME_FEED}?${urlencode(params)}`;
+  const headers2 = buildHeaders({
+    userAgent: ctx.config.tiktok.userAgent,
+    referer: "https://www.tiktok.com/",
+    cookie: ctx.config.tiktok.cookie || "CykaBlyat=XD",
+    extra: { "x-ladon": "Hello From Evil0ctal!" }
+  });
+  const data = await fetchGetJson(url, headers2);
+  return Array.isArray(data.aweme_list) ? data.aweme_list : [];
+}
 async function fetchOneVideo2(ctx, awemeId) {
   const url = `${HOME_FEED}?${urlencode(feedParams(awemeId))}`;
   const headers2 = buildHeaders({
@@ -2367,17 +2380,6 @@ function searchQueries(ctx, q3, platform, limit = 12, offset = 0) {
   const like = `%${String(q3 || "").trim()}%`;
   if (platform) return pageQueries(ctx, "WHERE platform = ? AND (description LIKE ? OR author LIKE ? OR tags LIKE ?)", [platform, like, like, like], "hits DESC, updated_at DESC", limit, offset);
   return pageQueries(ctx, "WHERE description LIKE ? OR author LIKE ? OR tags LIKE ?", [like, like, like], "hits DESC, updated_at DESC", limit, offset);
-}
-async function staleQueries(ctx, limit = 15) {
-  const db = ctx.config.d1;
-  if (!db) return [];
-  try {
-    await ensureSchema(db);
-    const r = await db.prepare(`SELECT platform, video_id, original_url FROM queries ORDER BY updated_at ASC LIMIT ?`).bind(limit).all();
-    return r?.results || [];
-  } catch {
-    return [];
-  }
 }
 async function getWork(ctx, platform, videoId) {
   const db = ctx.config.d1;
@@ -3632,7 +3634,7 @@ h2{font-size:15px;margin:30px 0 12px;font-family:var(--serif);letter-spacing:.04
 
 // src/service/cron.js
 var THROTTLE_MS = 50 * 1e3;
-var REFRESH_BATCH = 8;
+var HOT_BATCH = 10;
 async function cronService(request, ctx) {
   const expr = request.headers.get("x-edge-cron-expression") || "default";
   const last = await metaGet(ctx, `cron:last:${expr}`);
@@ -3641,37 +3643,37 @@ async function cronService(request, ctx) {
     return json({ code: 200, skipped: "throttled", expr });
   }
   await metaSet(ctx, `cron:last:${expr}`, now);
-  if (!ctx.config.d1) {
-    return json({ code: 200, skipped: "no-d1", expr });
-  }
+  if (!ctx.config.d1) return json({ code: 200, skipped: "no-d1", expr });
   const run = (async () => {
-    const stale = await staleQueries(ctx, REFRESH_BATCH);
-    let ok = 0;
+    let grown = 0;
     const errors = [];
-    for (const w of stale) {
-      try {
-        await ingestWork(ctx, request, w.platform, w.video_id, w.original_url, true, { warmVideo: false });
-        await maybeFetchComments(ctx, w.platform, w.video_id);
-        ok++;
-      } catch (e) {
-        errors.push(`${w.platform}:${w.video_id} ${e?.message || e}`);
+    try {
+      const feed = await fetchTrendingFeed(ctx, HOT_BATCH);
+      for (const aweme of feed) {
+        if (grown >= HOT_BATCH) break;
+        const id = aweme?.aweme_id;
+        if (!id) continue;
+        try {
+          await ingestWork(ctx, request, "tiktok", id, `https://www.tiktok.com/@/video/${id}`, false);
+          grown++;
+        } catch (e) {
+          errors.push(`tiktok ${id} ${e?.message || e}`);
+        }
       }
+    } catch (e) {
+      errors.push(`tiktok-feed ${e?.message || e}`);
     }
-    await metaSet(ctx, `cron:stats:${expr}`, now);
-    return { refreshed: ok, attempted: stale.length, errors: errors.slice(0, 5) };
+    await metaSet(ctx, `cron:hot:${expr}`, now);
+    return { grown, douyin: "skipped (no public hot-video feed)", errors: errors.slice(0, 5) };
   })();
   if (ctx.waitUntil) {
     ctx.waitUntil(run);
-    return json({ code: 200, expr, started: true, batch: REFRESH_BATCH });
+    return json({ code: 200, expr, started: true, hotBatch: HOT_BATCH });
   }
-  const result = await run;
-  return json({ code: 200, expr, ...result });
+  return json({ code: 200, expr, ...await run });
 }
 function json(obj) {
-  return new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "content-type": "application/json; charset=utf-8" }
-  });
+  return new Response(JSON.stringify(obj), { status: 200, headers: { "content-type": "application/json; charset=utf-8" } });
 }
 
 // src/service/img.js

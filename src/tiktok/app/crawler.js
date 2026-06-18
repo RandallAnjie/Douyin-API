@@ -22,6 +22,23 @@ function feedParams (awemeId) {
   }
 }
 
+// Trending feed (the FYP): the same endpoint without an aweme_id returns
+// a batch of recommended/trending videos. Used by cron to grow the library
+// from what's hot. Returns the aweme_list (full objects).
+export async function fetchTrendingFeed (ctx, count = 12) {
+  const params = { ...feedParams(''), count: String(count) }
+  delete params.aweme_id
+  const url = `${HOME_FEED}?${urlencode(params)}`
+  const headers = buildHeaders({
+    userAgent: ctx.config.tiktok.userAgent,
+    referer: 'https://www.tiktok.com/',
+    cookie: ctx.config.tiktok.cookie || 'CykaBlyat=XD',
+    extra: { 'x-ladon': 'Hello From Evil0ctal!' }
+  })
+  const data = await fetchGetJson(url, headers)
+  return Array.isArray(data.aweme_list) ? data.aweme_list : []
+}
+
 export async function fetchOneVideo (ctx, awemeId) {
   const url = `${HOME_FEED}?${urlencode(feedParams(awemeId))}`
   const headers = buildHeaders({

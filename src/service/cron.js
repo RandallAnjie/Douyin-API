@@ -2,64 +2,61 @@
 // the edge agent calls this on the operator's schedule with an
 // X-Edge-Cron-Expression header and NO token). Must respond 2xx.
 //
-// Since no token is available, this is made safe by being throttled,
-// bounded, and idempotent/read-only: every action is a public-video parse
-// that we'd serve anyway, just refreshed on a schedule. Jobs:
-//   - refresh: re-parse the oldest-refreshed works -> new stats snapshots
-//     (feeds the /work line chart) + fresh author follower points.
-// Douyin has no reliable public "popular feed" we can mine without an
-// app-signed client, so library growth is left to organic parses; the
-// Bilibili worker additionally runs a grow job from its popular feed.
-import { staleQueries, metaGet, metaSet } from '../utils/db.js'
+// Job: pull each platform's hot ranking and ingest + DOWNLOAD (cache media
+// into R2) the top items — growing the in-site library from what's
+// trending. It does NOT refresh already-stored works.
+//
+//   - TikTok: the app trending feed (FYP) → real hot videos.
+//   - Douyin: its public "hot" endpoint only returns trending KEYWORDS,
+//     not videos, and the web has no minable hot-video feed without a
+//     fragile search-per-keyword flow — so Douyin growth stays organic
+//     (parsed on demand). Logged as skipped.
+//
+// Safe by being throttled + bounded + idempotent.
+import { metaGet, metaSet } from '../utils/db.js'
 import { ingestWork } from '../utils/ingest.js'
-import { maybeFetchComments } from '../utils/comments.js'
+import * as tiktokApp from '../tiktok/app/crawler.js'
 
 const THROTTLE_MS = 50 * 1000
-const REFRESH_BATCH = 8
+const HOT_BATCH = 10
 
 export async function cronService (request, ctx) {
   const expr = request.headers.get('x-edge-cron-expression') || 'default'
-  // Throttle: ignore bursts / external pokes within the window.
   const last = await metaGet(ctx, `cron:last:${expr}`)
   const now = Date.now()
   if (last && (now - last.ts) < THROTTLE_MS) {
     return json({ code: 200, skipped: 'throttled', expr })
   }
   await metaSet(ctx, `cron:last:${expr}`, now)
-
-  if (!ctx.config.d1) {
-    return json({ code: 200, skipped: 'no-d1', expr })
-  }
+  if (!ctx.config.d1) return json({ code: 200, skipped: 'no-d1', expr })
 
   const run = (async () => {
-    const stale = await staleQueries(ctx, REFRESH_BATCH)
-    let ok = 0
+    let grown = 0
     const errors = []
-    for (const w of stale) {
-      try {
-        await ingestWork(ctx, request, w.platform, w.video_id, w.original_url, true, { warmVideo: false })
-        await maybeFetchComments(ctx, w.platform, w.video_id)
-        ok++
-      } catch (e) {
-        errors.push(`${w.platform}:${w.video_id} ${e?.message || e}`)
+    // TikTok trending feed → ingest + download.
+    try {
+      const feed = await tiktokApp.fetchTrendingFeed(ctx, HOT_BATCH)
+      for (const aweme of feed) {
+        if (grown >= HOT_BATCH) break
+        const id = aweme?.aweme_id
+        if (!id) continue
+        try {
+          await ingestWork(ctx, request, 'tiktok', id, `https://www.tiktok.com/@/video/${id}`, false)
+          grown++
+        } catch (e) { errors.push(`tiktok ${id} ${e?.message || e}`) }
       }
-    }
-    await metaSet(ctx, `cron:stats:${expr}`, now)
-    return { refreshed: ok, attempted: stale.length, errors: errors.slice(0, 5) }
+    } catch (e) { errors.push(`tiktok-feed ${e?.message || e}`) }
+    await metaSet(ctx, `cron:hot:${expr}`, now)
+    return { grown, douyin: 'skipped (no public hot-video feed)', errors: errors.slice(0, 5) }
   })()
 
-  // Respond fast; let the batch finish in the background when possible.
   if (ctx.waitUntil) {
     ctx.waitUntil(run)
-    return json({ code: 200, expr, started: true, batch: REFRESH_BATCH })
+    return json({ code: 200, expr, started: true, hotBatch: HOT_BATCH })
   }
-  const result = await run
-  return json({ code: 200, expr, ...result })
+  return json({ code: 200, expr, ...(await run) })
 }
 
 function json (obj) {
-  return new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { 'content-type': 'application/json; charset=utf-8' }
-  })
+  return new Response(JSON.stringify(obj), { status: 200, headers: { 'content-type': 'application/json; charset=utf-8' } })
 }
