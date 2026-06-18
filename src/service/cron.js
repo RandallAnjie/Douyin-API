@@ -39,7 +39,7 @@ export async function cronService (request, ctx) {
     const errors = []
 
     // TikTok trending feed (off by default — static device id gets 429).
-    if (ctx.config.cron.tiktokHot) try {
+    if (ctx.config.cron.tiktokHot || sync) try {
       const feed = await tiktokApp.fetchTrendingFeed(ctx, TT_BATCH)
       for (const aweme of feed) {
         if (tiktok >= TT_BATCH) break
@@ -54,7 +54,7 @@ export async function cronService (request, ctx) {
 
     // Douyin: hot keywords -> search -> top N videos each (off by default —
     // search hits risk-control 2483 without a full logged-in cookie).
-    if (ctx.config.cron.douyinHot) try {
+    if (ctx.config.cron.douyinHot || sync) try {
       const hot = await douyin.fetchHotSearchList(ctx)
       const words = (hot?.data?.word_list || []).map(w => w.word).filter(Boolean).slice(0, DY_KEYWORDS)
       for (const kw of words) {

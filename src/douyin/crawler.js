@@ -90,7 +90,9 @@ export function fetchUserLikeVideos (ctx, secUserId, maxCursor, count) {
 // reject it (caught by the caller).
 export function fetchGeneralSearch (ctx, keyword, offset = 0, count = 10) {
   const params = {
-    ...baseRequestParams(genFalseMsToken()),
+    // Empty msToken (like the working fetch_one_video call); a FAKE msToken
+    // can itself trip risk control (2483).
+    ...baseRequestParams(''),
     search_channel: 'aweme_general',
     enable_history: '1',
     keyword,

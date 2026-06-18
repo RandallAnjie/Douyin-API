@@ -1047,7 +1047,9 @@ function fetchUserLikeVideos(ctx, secUserId, maxCursor, count) {
 }
 function fetchGeneralSearch(ctx, keyword, offset = 0, count = 10) {
   const params = {
-    ...baseRequestParams(genFalseMsToken()),
+    // Empty msToken (like the working fetch_one_video call); a FAKE msToken
+    // can itself trip risk control (2483).
+    ...baseRequestParams(""),
     search_channel: "aweme_general",
     enable_history: "1",
     keyword,
@@ -3675,7 +3677,7 @@ async function cronService(request, ctx) {
     let tiktok = 0;
     let dy = 0;
     const errors = [];
-    if (ctx.config.cron.tiktokHot) try {
+    if (ctx.config.cron.tiktokHot || sync) try {
       const feed = await fetchTrendingFeed(ctx, TT_BATCH);
       for (const aweme of feed) {
         if (tiktok >= TT_BATCH) break;
@@ -3691,7 +3693,7 @@ async function cronService(request, ctx) {
     } catch (e) {
       errors.push(`tiktok-feed ${e?.message || e}`);
     }
-    if (ctx.config.cron.douyinHot) try {
+    if (ctx.config.cron.douyinHot || sync) try {
       const hot = await fetchHotSearchList(ctx);
       const words = (hot?.data?.word_list || []).map((w) => w.word).filter(Boolean).slice(0, DY_KEYWORDS);
       for (const kw of words) {
