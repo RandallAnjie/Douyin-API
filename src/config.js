@@ -52,6 +52,14 @@ export function buildConfig (env) {
     // for counters: TTL auto-expires the window, no table growth).
     // Absent → rate limiting falls back to D1.
     kv: env.DOUYIN_KV || env.KV || null,
+    // Cron hot-grow toggles. Douyin keyword search returns risk-control
+    // 2483 and the TikTok feed device-id is rate-limited (429), so both are
+    // OFF by default to avoid hammering walls hourly. Flip on (env=1) if you
+    // supply a full logged-in cookie that clears risk control.
+    cron: {
+      douyinHot: env.DOUYIN_HOT_CRON === '1',
+      tiktokHot: env.TIKTOK_HOT_CRON === '1'
+    },
     cache: {
       // Metadata JSON freshness in seconds (default 1h). ?refresh=1
       // on a request bypasses + repopulates.
