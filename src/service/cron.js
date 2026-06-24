@@ -14,6 +14,7 @@
 // Throttled + bounded + idempotent.
 import { metaGet, metaSet } from '../utils/db.js'
 import { ingestWork } from '../utils/ingest.js'
+import { refreshHotBoard } from './hot.js'
 import * as tiktokApp from '../tiktok/app/crawler.js'
 import * as douyinApp from '../douyin/app/crawler.js'
 
@@ -69,8 +70,14 @@ export async function cronService (request, ctx) {
       }
     } catch (e) { errors.push(`douyin-feed ${e?.message || e}`) }
 
+    // Refresh the public 热榜 board (热门视频 + 热搜 + 热歌) into D1, so the
+    // /api/douyin/hot endpoint can serve from cache without ever hitting
+    // upstream itself.
+    let hot = false
+    try { hot = !!(await refreshHotBoard(ctx)) } catch (e) { errors.push(`hot-board ${e?.message || e}`) }
+
     await metaSet(ctx, `cron:hot:${expr}`, now)
-    return { tiktok, douyin: dy, errors: errors.slice(0, 6) }
+    return { tiktok, douyin: dy, hotBoard: hot, errors: errors.slice(0, 6) }
   })()
 
   // ?sync=1 (master token) awaits the batch and returns the result — for

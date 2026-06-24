@@ -3202,7 +3202,6 @@ async function fetchHotMusicBoard(ctx, count = 50) {
 }
 
 // src/service/hot.js
-var CACHE_TTL = 5 * 60 * 1e3;
 var CACHE_KEY = "hot:douyin:board";
 function pickCover(obj) {
   const c = obj?.cover_large || obj?.cover_hd || obj?.cover_medium || obj?.word_cover || obj?.cover_thumb;
@@ -3238,22 +3237,30 @@ async function buildBoard(ctx) {
   }).filter((x) => x.title);
   return { search, music: songs, videos };
 }
+async function refreshHotBoard(ctx) {
+  const board = await buildBoard(ctx);
+  if (!board.search.length && !board.music.length && !board.videos.length) return null;
+  await metaSet(ctx, CACHE_KEY, JSON.stringify(board));
+  return board;
+}
 async function hotApiService(request, ctx) {
   const url = new URL(request.url);
-  const fresh = url.searchParams.get("refresh") === "1" && url.searchParams.get("token") === ctx.config.auth.token;
+  const isAdmin = url.searchParams.get("token") === ctx.config.auth.token;
   let board, updated;
-  const cached = fresh ? null : await metaGet(ctx, CACHE_KEY);
-  if (cached && Date.now() - cached.ts < CACHE_TTL) {
+  const cached = await metaGet(ctx, CACHE_KEY);
+  if (cached) {
     try {
       board = JSON.parse(cached.v);
       updated = cached.ts;
     } catch {
     }
   }
-  if (!board) {
-    board = await buildBoard(ctx);
+  if (!board && isAdmin) {
+    board = await refreshHotBoard(ctx);
     updated = Date.now();
-    await metaSet(ctx, CACHE_KEY, JSON.stringify(board));
+  }
+  if (!board) {
+    return rawJsonResponse({ code: 200, pending: true, updated: 0, videos: [], search: [], music: [] });
   }
   const rw = (x) => ({ ...x, cover: x.cover ? imgProxyLink(request, ctx, x.cover) : null });
   return rawJsonResponse({
@@ -3422,6 +3429,7 @@ footer a{color:var(--muted)}
       var j=await (await fetch('/api/douyin/hot')).json()
       data=j
       if(j.updated){var d=new Date(j.updated);$('#upd').textContent='\u66F4\u65B0\u4E8E '+d.getHours()+':'+('0'+d.getMinutes()).slice(-2)}
+      if(j.pending){statusEl.textContent='\u699C\u5355\u968F\u5B9A\u65F6\u4EFB\u52A1\u5237\u65B0\uFF0C\u9996\u6B21\u751F\u6210\u4E2D\uFF0C\u7A0D\u540E\u518D\u6765';grid.style.display='none';list.style.display='none';return}
       render()
     }catch(e){statusEl.textContent='\u52A0\u8F7D\u5931\u8D25\uFF1A'+e.message}
   }
@@ -4021,8 +4029,14 @@ async function cronService(request, ctx) {
     } catch (e) {
       errors.push(`douyin-feed ${e?.message || e}`);
     }
+    let hot = false;
+    try {
+      hot = !!await refreshHotBoard(ctx);
+    } catch (e) {
+      errors.push(`hot-board ${e?.message || e}`);
+    }
     await metaSet(ctx, `cron:hot:${expr}`, now);
-    return { tiktok, douyin: dy, errors: errors.slice(0, 6) };
+    return { tiktok, douyin: dy, hotBoard: hot, errors: errors.slice(0, 6) };
   })();
   if (ctx.waitUntil && !sync) {
     ctx.waitUntil(run);

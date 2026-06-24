@@ -147,10 +147,13 @@ keywords and hit risk-control 2483).
 
 ### 热榜 (`/hot` + `/api/douyin/hot`)
 
-抖音热搜榜 + 热歌榜 from the same unsigned app-domain endpoints
-(`hot/search/list`, `chart/music/list`). Cached 5min in `kv_meta`.
-Words/songs deep-link into our own `/search` (a way INTO the library,
-not just a mirror). Covers go through the signed `/img` proxy.
+热门视频 (recommend feed) + 热搜榜 + 热歌榜, from the unsigned app-domain
+endpoints (`feed`, `hot/search/list`, `chart/music/list`). **Upstream
+fetch is cron-only** (`refreshHotBoard` stores the board in `kv_meta`);
+the public API reads D1 only and returns `{pending:true}` on a cold miss
+(master `?token=` may warm it live). 热门视频 cards parse + store on click
+(guest path → lightbox); 热搜/热歌 deep-link into our own `/search`
+(Douyin exposes no per-topic video list). Covers via the `/img` proxy.
 
 ## Conventions
 

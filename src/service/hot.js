@@ -1,14 +1,14 @@
-// Public 抖音热榜 — 热搜榜 (trending search words) + 热歌榜 (trending music),
-// pulled from the app-domain ranking endpoints (unsigned). Cached 5min in
-// kv_meta so we don't hammer upstream. Words/songs deep-link into our own
-// /search index (the aggregation play: a hot list is a way INTO the library,
-// not just a mirror of Douyin's).
+// Public 抖音热榜 — 热门视频 (recommend feed) + 热搜榜 + 热歌榜, from the
+// app-domain endpoints (unsigned). To avoid abuse, the upstream fetch runs
+// ONLY in cron (refreshHotBoard) and stores the board JSON in D1; the public
+// API reads D1 only and never hits upstream on a cache miss. Covers are
+// served via the R2-backed /img proxy. Words/songs deep-link into our own
+// /search; 热门视频 cards parse + store on click.
 import { rawJsonResponse } from '../utils/respond.js'
 import { metaGet, metaSet } from '../utils/db.js'
 import { imgProxyLink } from '../utils/proxy-link.js'
 import * as douyinApp from '../douyin/app/crawler.js'
 
-const CACHE_TTL = 5 * 60 * 1000
 const CACHE_KEY = 'hot:douyin:board'
 
 function pickCover (obj) {
@@ -47,20 +47,34 @@ async function buildBoard (ctx) {
   return { search, music: songs, videos }
 }
 
+// Cron-only: fetch the board from upstream and persist it to D1. Returns the
+// board (or null on total failure). The public API never calls this path.
+export async function refreshHotBoard (ctx) {
+  const board = await buildBoard(ctx)
+  if (!board.search.length && !board.music.length && !board.videos.length) return null
+  await metaSet(ctx, CACHE_KEY, JSON.stringify(board))
+  return board
+}
+
 export async function hotApiService (request, ctx) {
   const url = new URL(request.url)
-  const fresh = url.searchParams.get('refresh') === '1' && url.searchParams.get('token') === ctx.config.auth.token
+  const isAdmin = url.searchParams.get('token') === ctx.config.auth.token
   let board, updated
-  const cached = fresh ? null : await metaGet(ctx, CACHE_KEY)
-  if (cached && (Date.now() - cached.ts) < CACHE_TTL) {
+  const cached = await metaGet(ctx, CACHE_KEY)
+  if (cached) {
     try { board = JSON.parse(cached.v); updated = cached.ts } catch {}
   }
-  if (!board) {
-    board = await buildBoard(ctx)
+  // Cache miss: only an admin (master token) may trigger a live fetch — this
+  // is the manual warm path. Public requests get an empty "pending" board so
+  // the aggregation endpoints can't be used to hammer upstream.
+  if (!board && isAdmin) {
+    board = await refreshHotBoard(ctx)
     updated = Date.now()
-    await metaSet(ctx, CACHE_KEY, JSON.stringify(board))
   }
-  // Route cover images through the cached /img proxy (signed).
+  if (!board) {
+    return rawJsonResponse({ code: 200, pending: true, updated: 0, videos: [], search: [], music: [] })
+  }
+  // Route cover images through the cached /img proxy (R2-backed, signed).
   const rw = (x) => ({ ...x, cover: x.cover ? imgProxyLink(request, ctx, x.cover) : null })
   return rawJsonResponse({
     code: 200,
@@ -230,6 +244,7 @@ footer a{color:var(--muted)}
       var j=await (await fetch('/api/douyin/hot')).json()
       data=j
       if(j.updated){var d=new Date(j.updated);$('#upd').textContent='更新于 '+d.getHours()+':'+('0'+d.getMinutes()).slice(-2)}
+      if(j.pending){statusEl.textContent='榜单随定时任务刷新，首次生成中，稍后再来';grid.style.display='none';list.style.display='none';return}
       render()
     }catch(e){statusEl.textContent='加载失败：'+e.message}
   }
