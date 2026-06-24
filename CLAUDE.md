@@ -145,6 +145,11 @@ yields ~25 real hot videos per run, and the TikTok FYP feed grows the
 TikTok side. The old web-search growth path is gone (it only returned
 keywords and hit risk-control 2483).
 
+Admins can trigger a run by hand for testing: `GET /api/admin/cron?token=`
+(master token) runs synchronously, bypasses the throttle, and returns the
+batch result. `?only=hot` refreshes just the 热榜 board, `?only=grow` just
+the library growth.
+
 ### 热榜 (`/hot` + `/api/douyin/hot`)
 
 热门视频 (recommend feed) + 热搜榜 + 热歌榜, from the unsigned app-domain

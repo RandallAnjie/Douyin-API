@@ -2,6 +2,11 @@
 // the edge agent calls this on the operator's schedule with an
 // X-Edge-Cron-Expression header and NO token). Must respond 2xx.
 //
+// Admins can trigger it by hand for testing via GET /api/admin/cron?token=
+// (master token): runs synchronously, bypasses the throttle, and returns
+// the result. ?only=hot refreshes just the 热榜 board; ?only=grow just the
+// library growth; default does both.
+//
 // Grows the in-site library from what's trending and DOWNLOADS media into
 // R2. It does NOT refresh on a fixed schedule, but re-ingesting an item
 // that's already cached just updates its info (warmUrl skips the download).
@@ -24,7 +29,12 @@ const DY_BATCH = 25
 
 export async function cronService (request, ctx) {
   const url = new URL(request.url)
-  const sync = url.searchParams.get('sync') === '1' && url.searchParams.get('token') === ctx.config.auth.token
+  // Master token => admin trigger: run synchronously, bypass the throttle,
+  // return the batch result. (The edge agent calls without a token.)
+  const sync = url.searchParams.get('token') === ctx.config.auth.token
+  const only = url.searchParams.get('only') || ''
+  const doGrow = only !== 'hot'
+  const doHot = only !== 'grow'
   const expr = request.headers.get('x-edge-cron-expression') || 'default'
   const last = await metaGet(ctx, `cron:last:${expr}`)
   const now = Date.now()
@@ -40,7 +50,7 @@ export async function cronService (request, ctx) {
     const errors = []
 
     // TikTok trending feed (off by default — static device id gets 429).
-    if (ctx.config.cron.tiktokHot || sync) try {
+    if (doGrow && (ctx.config.cron.tiktokHot || sync)) try {
       const feed = await tiktokApp.fetchTrendingFeed(ctx, TT_BATCH)
       for (const aweme of feed) {
         if (tiktok >= TT_BATCH) break
@@ -57,7 +67,7 @@ export async function cronService (request, ctx) {
     // Douyin: app-domain recommend feed -> real hot videos, unsigned. The
     // feed returns full aweme objects, so we ingest them directly (no per-id
     // re-fetch), the same way the TikTok FYP path does.
-    try {
+    if (doGrow) try {
       const feed = await douyinApp.fetchAppFeed(ctx, DY_BATCH)
       for (const aweme of feed) {
         if (dy >= DY_BATCH) break
@@ -74,19 +84,19 @@ export async function cronService (request, ctx) {
     // /api/douyin/hot endpoint can serve from cache without ever hitting
     // upstream itself.
     let hot = false
-    try { hot = !!(await refreshHotBoard(ctx)) } catch (e) { errors.push(`hot-board ${e?.message || e}`) }
+    if (doHot) try { hot = !!(await refreshHotBoard(ctx)) } catch (e) { errors.push(`hot-board ${e?.message || e}`) }
 
     await metaSet(ctx, `cron:hot:${expr}`, now)
     return { tiktok, douyin: dy, hotBoard: hot, errors: errors.slice(0, 6) }
   })()
 
-  // ?sync=1 (master token) awaits the batch and returns the result — for
-  // manually checking what the cron actually fetched.
+  // Admin trigger (master token) awaits the batch and returns the result —
+  // for manually checking what the cron actually fetched/cached.
   if (ctx.waitUntil && !sync) {
     ctx.waitUntil(run)
     return json({ code: 200, expr, started: true, ttBatch: TT_BATCH, dyBatch: DY_BATCH })
   }
-  return json({ code: 200, expr, ...(await run) })
+  return json({ code: 200, expr, sync: sync || undefined, only: only || undefined, ...(await run) })
 }
 
 function json (obj) {

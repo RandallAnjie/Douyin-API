@@ -3984,7 +3984,10 @@ var TT_BATCH = 25;
 var DY_BATCH = 25;
 async function cronService(request, ctx) {
   const url = new URL(request.url);
-  const sync = url.searchParams.get("sync") === "1" && url.searchParams.get("token") === ctx.config.auth.token;
+  const sync = url.searchParams.get("token") === ctx.config.auth.token;
+  const only = url.searchParams.get("only") || "";
+  const doGrow = only !== "hot";
+  const doHot = only !== "grow";
   const expr = request.headers.get("x-edge-cron-expression") || "default";
   const last = await metaGet(ctx, `cron:last:${expr}`);
   const now = Date.now();
@@ -3997,7 +4000,7 @@ async function cronService(request, ctx) {
     let tiktok = 0;
     let dy = 0;
     const errors = [];
-    if (ctx.config.cron.tiktokHot || sync) try {
+    if (doGrow && (ctx.config.cron.tiktokHot || sync)) try {
       const feed = await fetchTrendingFeed(ctx, TT_BATCH);
       for (const aweme of feed) {
         if (tiktok >= TT_BATCH) break;
@@ -4013,7 +4016,7 @@ async function cronService(request, ctx) {
     } catch (e) {
       errors.push(`tiktok-feed ${e?.message || e}`);
     }
-    try {
+    if (doGrow) try {
       const feed = await fetchAppFeed(ctx, DY_BATCH);
       for (const aweme of feed) {
         if (dy >= DY_BATCH) break;
@@ -4030,7 +4033,7 @@ async function cronService(request, ctx) {
       errors.push(`douyin-feed ${e?.message || e}`);
     }
     let hot = false;
-    try {
+    if (doHot) try {
       hot = !!await refreshHotBoard(ctx);
     } catch (e) {
       errors.push(`hot-board ${e?.message || e}`);
@@ -4042,7 +4045,7 @@ async function cronService(request, ctx) {
     ctx.waitUntil(run);
     return json({ code: 200, expr, started: true, ttBatch: TT_BATCH, dyBatch: DY_BATCH });
   }
-  return json({ code: 200, expr, ...await run });
+  return json({ code: 200, expr, sync: sync || void 0, only: only || void 0, ...await run });
 }
 function json(obj) {
   return new Response(JSON.stringify(obj), { status: 200, headers: { "content-type": "application/json; charset=utf-8" } });
@@ -4447,6 +4450,12 @@ async function router(request, ctx) {
     return new Response(null, { status: 204 });
   }
   if (pathname === "/__edge_cron" && request.method === "POST") {
+    return cronService(request, ctx);
+  }
+  if (pathname === "/api/admin/cron") {
+    if (url.searchParams.get("token") !== ctx.config.auth.token) {
+      return new Response(JSON.stringify({ code: 401, message: "token required" }), { status: 401, headers: { "content-type": "application/json; charset=utf-8" } });
+    }
     return cronService(request, ctx);
   }
   if (pathname === "/" && request.method === "GET") {
