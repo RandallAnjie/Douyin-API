@@ -17,10 +17,12 @@ function pickCover (obj) {
 }
 
 async function buildBoard (ctx) {
-  const [words, music] = await Promise.all([
+  const [words, music, feed] = await Promise.all([
     douyinApp.fetchHotSearchBoard(ctx).catch(() => []),
-    douyinApp.fetchHotMusicBoard(ctx, 50).catch(() => [])
+    douyinApp.fetchHotMusicBoard(ctx, 50).catch(() => []),
+    douyinApp.fetchAppFeed(ctx, 18).catch(() => [])
   ])
+  const videos = feed.map(douyinApp.feedCard).filter(x => x.id)
   const search = words.map((w, i) => ({
     rank: i + 1,
     word: w.word || '',
@@ -42,7 +44,7 @@ async function buildBoard (ctx) {
       cover: pickCover(mi)
     }
   }).filter(x => x.title)
-  return { search, music: songs }
+  return { search, music: songs, videos }
 }
 
 export async function hotApiService (request, ctx) {
@@ -63,6 +65,7 @@ export async function hotApiService (request, ctx) {
   return rawJsonResponse({
     code: 200,
     updated,
+    videos: (board.videos || []).map(rw),
     search: board.search.map(rw),
     music: board.music.map(rw)
   })
@@ -114,33 +117,77 @@ h1{font-family:var(--serif);font-weight:600;font-size:clamp(36px,9vw,64px);line-
 .tag.new{background:rgba(63,224,197,.16);color:var(--teal)}
 .tag.boom{background:rgba(245,196,81,.18);color:var(--gold)}
 .heat{font-family:var(--mono);font-size:12px;color:var(--gold);flex:none;text-align:right;min-width:62px}
+/* 热门视频 grid */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
+.card{cursor:pointer;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;transition:border-color .15s}
+.card:hover{border-color:var(--teal)}
+.thumb{position:relative;width:100%;aspect-ratio:3/4;background:#0e0d12;overflow:hidden}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb .badge{position:absolute;left:8px;top:8px;font-family:var(--mono);font-size:10px;background:rgba(20,18,26,.8);color:var(--teal);padding:2px 7px;border-radius:5px}
+.thumb .dg{position:absolute;right:8px;top:8px;font-family:var(--mono);font-size:10px;background:rgba(255,93,108,.9);color:#1a0c0f;font-weight:700;padding:2px 7px;border-radius:5px}
+.thumb .play{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:34px;color:rgba(255,255,255,.85);opacity:0;transition:opacity .15s}
+.card:hover .play{opacity:1}
+.cinfo{padding:9px 10px}
+.cinfo .who{font-family:var(--mono);font-size:11px;color:var(--teal);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cinfo .cd{font-size:12px;margin-top:3px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--muted)}
 footer{margin-top:32px;font-family:var(--mono);font-size:11px;color:var(--faint)}
 footer a{color:var(--muted)}
+/* lightbox */
+.lb{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;background:rgba(8,7,11,.92);backdrop-filter:blur(6px)}
+.lb.on{display:flex}
+.lb-stage{position:relative;max-width:min(900px,94vw);max-height:90vh;display:flex;align-items:center;justify-content:center}
+.lb-stage video,.lb-stage img{max-width:94vw;max-height:90vh;border-radius:10px;display:block;background:#000}
+.lb-msg{font-family:var(--mono);font-size:13px;color:#cdd6e2}
+.lb-close{position:fixed;top:16px;right:18px;width:40px;height:40px;border:0;border-radius:50%;background:rgba(255,255,255,.1);color:#fff;font-size:20px;cursor:pointer;line-height:40px}
+.lb-close:hover{background:var(--coral);color:#1a0c0f}
+.lb-cap{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);max-width:90vw;font-family:var(--mono);font-size:12px;color:#cdd6e2;background:rgba(8,7,11,.6);padding:6px 14px;border-radius:999px;text-align:center}
+.lb-cap a{color:var(--teal);text-decoration:none}
 </style>
 </head>
 <body>
 <main class=wrap>
   <p class=eyebrow>DOUYIN 热榜</p>
   <h1>此刻在热</h1>
-  <p class=sub>抖音此刻的热搜与热歌——点任意一条，搜进我们自己的库里。</p>
+  <p class=sub>抖音此刻最热的视频、热搜与热歌。点开热门视频即自动解析入库；点热搜/热歌搜进我们自己的库里。</p>
   <div class=bar>
-    <button class="tab on" data-b=search id=tabS>热搜榜</button>
+    <button class="tab on" data-b=videos id=tabV>热门视频</button>
+    <button class=tab data-b=search id=tabS>热搜榜</button>
     <button class=tab data-b=music id=tabM>热歌榜</button>
     <span class=spacer></span>
     <a href="/discover">发现</a>
     <a href="/">← 去解析</a>
   </div>
   <p id=status class=status>加载中…</p>
+  <div id=grid class=grid style=display:none></div>
   <div id=list class=list></div>
   <footer>自托管于 RandallFlare · <span id=upd></span> · <a href="/">解析台</a></footer>
 </main>
+<div id=lb class=lb>
+  <button class=lb-close id=lbClose aria-label=关闭>×</button>
+  <div class=lb-stage id=lbStage></div>
+  <div class=lb-cap id=lbCap></div>
+</div>
 <script>
 (function(){
   var $=function(s){return document.querySelector(s)}
-  var list=$('#list'),statusEl=$('#status'),board='search',data=null
+  var list=$('#list'),grid=$('#grid'),statusEl=$('#status'),board='videos',data=null
   function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
   function fmt(n){n=Number(n)||0;if(n>=1e8)return (n/1e8).toFixed(1)+'亿';if(n>=1e4)return (n/1e4).toFixed(1)+'万';return String(n)}
   function labelTag(l){if(l===3)return['hot','热'];if(l===1)return['new','新'];if(l===2)return['boom','爆'];return null}
+  function videoCard(r){
+    var c=el('div','card');c.addEventListener('click',function(){openVideo(r)})
+    var th=el('div','thumb')
+    if(r.cover){var im=el('img');im.loading='lazy';im.src=r.cover;im.alt='';th.appendChild(im)}
+    th.appendChild(el('span','badge',r.type==='image'?'图集':'视频'))
+    th.appendChild(el('span','dg','🔥'+fmt(r.digg)))
+    th.appendChild(el('span','play','▶'))
+    c.appendChild(th)
+    var info=el('div','cinfo')
+    info.appendChild(el('div','who',r.author||'未知作者'))
+    info.appendChild(el('div','cd',r.desc||'(无标题)'))
+    c.appendChild(info)
+    return c
+  }
   function searchRow(r){
     var a=el('a','row');a.href='/search?q='+encodeURIComponent(r.word)
     a.appendChild(el('div','rank',r.rank))
@@ -166,11 +213,16 @@ footer a{color:var(--muted)}
     return a
   }
   function render(){
-    list.innerHTML=''
-    var rows=board==='search'?(data.search||[]):(data.music||[])
+    list.innerHTML='';grid.innerHTML=''
+    var isV=board==='videos'
+    grid.style.display=isV?'':'none';list.style.display=isV?'none':''
+    var rows=isV?(data.videos||[]):board==='search'?(data.search||[]):(data.music||[])
     if(!rows.length){statusEl.textContent='暂时拉不到这个榜单，待会儿再来';return}
-    statusEl.textContent='共 '+rows.length+' 条'
-    rows.forEach(function(r){list.appendChild(board==='search'?searchRow(r):musicRow(r))})
+    statusEl.textContent='共 '+rows.length+' 条'+(isV?' · 点开即自动解析入库':'')
+    rows.forEach(function(r){
+      if(isV)grid.appendChild(videoCard(r))
+      else list.appendChild(board==='search'?searchRow(r):musicRow(r))
+    })
   }
   async function load(){
     statusEl.textContent='加载中…'
@@ -181,9 +233,36 @@ footer a{color:var(--muted)}
       render()
     }catch(e){statusEl.textContent='加载失败：'+e.message}
   }
-  function setBoard(b){if(board===b)return;board=b;$('#tabS').classList.toggle('on',b==='search');$('#tabM').classList.toggle('on',b==='music');render()}
-  $('#tabS').addEventListener('click',function(){setBoard('search')})
-  $('#tabM').addEventListener('click',function(){setBoard('music')})
+  var tabs={videos:$('#tabV'),search:$('#tabS'),music:$('#tabM')}
+  function setBoard(b){if(board===b)return;board=b;for(var k in tabs)tabs[k].classList.toggle('on',k===b);render()}
+  for(var k in tabs)(function(b){tabs[b].addEventListener('click',function(){setBoard(b)})})(k)
+
+  // Lightbox — clicking a 热门视频 triggers a guest parse (which stores the
+  // work to D1 + warms media into R2), then plays it.
+  var lb=$('#lb'),lbStage=$('#lbStage'),lbCap=$('#lbCap')
+  function closeLb(){lb.classList.remove('on');lbStage.innerHTML='';lbCap.innerHTML='';document.body.style.overflow=''}
+  $('#lbClose').addEventListener('click',closeLb)
+  lb.addEventListener('click',function(e){if(e.target===lb)closeLb()})
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'&&lb.classList.contains('on'))closeLb()})
+  async function openVideo(r){
+    lb.classList.add('on');document.body.style.overflow='hidden'
+    lbStage.innerHTML='<div class=lb-msg>解析并入库中…</div>';lbCap.innerHTML=''
+    try{
+      var u='https://www.douyin.com/video/'+encodeURIComponent(r.id)
+      var j=await (await fetch('/api/hybrid/video_data?url='+encodeURIComponent(u)+'&minimal=1&proxy=1')).json()
+      var o=j.data||{}
+      var work='/work?platform=douyin&id='+encodeURIComponent(r.id)
+      lbStage.innerHTML=''
+      if(o.type==='image'&&o.images&&o.images.length){var im=document.createElement('img');im.src=o.images[0];im.alt='';lbStage.appendChild(im)}
+      else{
+        var vd=o.video_data||{}
+        var src=vd.nwm_video_url_HQ||vd.nwm_video_url||vd.wm_video_url_HQ||vd.wm_video_url||o.play
+        if(src){var v=document.createElement('video');v.controls=true;v.autoplay=true;v.setAttribute('playsinline','');v.src=src;lbStage.appendChild(v)}
+        else{var c=o.cover_data&&o.cover_data.cover;if(c){var ci=document.createElement('img');ci.src=c;lbStage.appendChild(ci)}else lbStage.innerHTML='<div class=lb-msg>已入库，但暂时拿不到可播放地址</div>'}
+      }
+      lbCap.innerHTML='已入库 · <a href="'+work+'">查看数据分析 →</a>'
+    }catch(e){lbStage.innerHTML='<div class=lb-msg>解析失败：'+(e.message||e)+'</div>'}
+  }
   load()
 })();
 </script>
