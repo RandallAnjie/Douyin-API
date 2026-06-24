@@ -17,9 +17,9 @@ import * as tiktokApp from '../tiktok/app/crawler.js'
 import * as douyin from '../douyin/crawler.js'
 
 const THROTTLE_MS = 50 * 1000
-const TT_BATCH = 10
-const DY_KEYWORDS = 3
-const DY_PER_KEYWORD = 5
+const TT_BATCH = 25
+const DY_KEYWORDS = 6
+const DY_PER_KEYWORD = 8
 
 export async function cronService (request, ctx) {
   const url = new URL(request.url)
