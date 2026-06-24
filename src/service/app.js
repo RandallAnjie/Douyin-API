@@ -135,7 +135,7 @@ footer a{color:var(--muted)}
   <p id=status class=status>等待口令</p>
   <div id=out></div>
 
-  <footer>自托管于 RandallFlare · <a href="/discover">发现</a> · <a href="/search">搜索</a> · <a href="/admin">档案</a> · <a href="/docs">接口文档</a></footer>
+  <footer>自托管于 RandallFlare · <a href="/hot">热榜</a> · <a href="/discover">发现</a> · <a href="/search">搜索</a> · <a href="/admin">档案</a> · <a href="/docs">接口文档</a></footer>
 </main>
 
 <script>
