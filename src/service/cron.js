@@ -7,19 +7,19 @@
 // that's already cached just updates its info (warmUrl skips the download).
 //
 //   - TikTok: app trending feed (FYP) → real hot videos.
-//   - Douyin: the hot board only returns trending KEYWORDS, so we search
-//     each top keyword and take the first few videos.
+//   - Douyin: the app-domain recommend feed (aweme.snssdk.com/aweme/v1/feed)
+//     → real hot videos, unsigned. This replaces the old web-search path,
+//     which only yielded keywords and hit risk-control 2483.
 //
 // Throttled + bounded + idempotent.
 import { metaGet, metaSet } from '../utils/db.js'
 import { ingestWork } from '../utils/ingest.js'
 import * as tiktokApp from '../tiktok/app/crawler.js'
-import * as douyin from '../douyin/crawler.js'
+import * as douyinApp from '../douyin/app/crawler.js'
 
 const THROTTLE_MS = 50 * 1000
 const TT_BATCH = 25
-const DY_KEYWORDS = 6
-const DY_PER_KEYWORD = 8
+const DY_BATCH = 25
 
 export async function cronService (request, ctx) {
   const url = new URL(request.url)
@@ -53,32 +53,21 @@ export async function cronService (request, ctx) {
       }
     } catch (e) { errors.push(`tiktok-feed ${e?.message || e}`) }
 
-    // Douyin: hot keywords -> search -> top N videos each (off by default —
-    // search hits risk-control 2483 without a full logged-in cookie).
-    if (ctx.config.cron.douyinHot || sync) try {
-      const hot = await douyin.fetchHotSearchList(ctx)
-      const words = (hot?.data?.word_list || []).map(w => w.word).filter(Boolean).slice(0, DY_KEYWORDS)
-      for (const kw of words) {
+    // Douyin: app-domain recommend feed -> real hot videos, unsigned. The
+    // feed returns full aweme objects, so we ingest them directly (no per-id
+    // re-fetch), the same way the TikTok FYP path does.
+    try {
+      const feed = await douyinApp.fetchAppFeed(ctx, DY_BATCH)
+      for (const aweme of feed) {
+        if (dy >= DY_BATCH) break
+        const id = aweme?.aweme_id
+        if (!id) continue
         try {
-          const sr = await douyin.fetchGeneralSearch(ctx, kw, 0, 10)
-          if (sr?.status_code && sr.status_code !== 0) {
-            errors.push(`search "${kw}" status_code ${sr.status_code} (risk control?)`)
-            continue
-          }
-          const arr = Array.isArray(sr?.data) ? sr.data : (sr?.data?.data || [])
-          const ids = arr
-            .map(x => x.aweme_info?.aweme_id || x.aweme?.aweme_id || x.aweme_id)
-            .filter(Boolean)
-            .slice(0, DY_PER_KEYWORD)
-          for (const id of ids) {
-            try {
-              await ingestWork(ctx, request, 'douyin', id, `https://www.douyin.com/video/${id}`, false)
-              dy++
-            } catch (e) { errors.push(`douyin ${id} ${e?.message || e}`) }
-          }
-        } catch (e) { errors.push(`search "${kw}" ${e?.message || e}`) }
+          await ingestWork(ctx, request, 'douyin', id, `https://www.douyin.com/video/${id}`, false, { raw: aweme })
+          dy++
+        } catch (e) { errors.push(`douyin ${id} ${e?.message || e}`) }
       }
-    } catch (e) { errors.push(`douyin-hot ${e?.message || e}`) }
+    } catch (e) { errors.push(`douyin-feed ${e?.message || e}`) }
 
     await metaSet(ctx, `cron:hot:${expr}`, now)
     return { tiktok, douyin: dy, errors: errors.slice(0, 6) }
@@ -88,7 +77,7 @@ export async function cronService (request, ctx) {
   // manually checking what the cron actually fetched.
   if (ctx.waitUntil && !sync) {
     ctx.waitUntil(run)
-    return json({ code: 200, expr, started: true, ttBatch: TT_BATCH, dyKeywords: DY_KEYWORDS })
+    return json({ code: 200, expr, started: true, ttBatch: TT_BATCH, dyBatch: DY_BATCH })
   }
   return json({ code: 200, expr, ...(await run) })
 }

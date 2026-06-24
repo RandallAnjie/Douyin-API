@@ -139,8 +139,18 @@ RandallFlare convention: the edge agent POSTs `/__edge_cron` with an
 worker backend. The handler is throttled (50s/expr), bounded (8 works/run)
 and idempotent: it re-parses the oldest works to append fresh
 `stats_history` snapshots (grows the line charts) + refreshes comments.
-Douyin has no minable public popular feed, so library growth is organic;
-the Bilibili worker additionally grows from its popular feed.
+Library growth: the Douyin **app-domain recommend feed**
+(`aweme.snssdk.com/aweme/v1/feed/`, unsigned — see `src/douyin/app/`)
+yields ~25 real hot videos per run, and the TikTok FYP feed grows the
+TikTok side. The old web-search growth path is gone (it only returned
+keywords and hit risk-control 2483).
+
+### 热榜 (`/hot` + `/api/douyin/hot`)
+
+抖音热搜榜 + 热歌榜 from the same unsigned app-domain endpoints
+(`hot/search/list`, `chart/music/list`). Cached 5min in `kv_meta`.
+Words/songs deep-link into our own `/search` (a way INTO the library,
+not just a mirror). Covers go through the signed `/img` proxy.
 
 ## Conventions
 
