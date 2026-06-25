@@ -6,7 +6,7 @@ import * as douyin from '../douyin/crawler.js'
 import * as tiktokWeb from '../tiktok/web/crawler.js'
 
 const TTL = 6 * 3600 * 1000 // refetch a work's comments at most every 6h
-const TOP_REPLY_FETCH = 10 // top comments to fetch full replies for
+const TOP_REPLY_FETCH = 15 // top comments to fetch full replies for (parallel)
 
 function mapBD (c, parentId) {
   return {
@@ -27,19 +27,28 @@ async function collect (ctx, platform, id, count) {
     : await douyin.fetchVideoComments(ctx, id, 0, count)
   const list = resp?.comments || []
   const out = list.map(c => mapBD(c, null))
-  // inline reply previews
+  // inline reply previews (present only when the request is authenticated)
   for (const c of list) for (const rc of (c.reply_comment || [])) out.push(mapBD(rc, c.cid))
-  // fetch full replies for the top comments that have more than the preview
-  for (const c of list.slice(0, TOP_REPLY_FETCH)) {
-    if ((c.reply_comment_total ?? 0) > (c.reply_comment?.length || 0)) {
-      try {
-        const rr = platform === 'tiktok'
-          ? await tiktokWeb.fetchPostCommentReply(ctx, id, c.cid, 0, 10, '')
-          : await douyin.fetchVideoCommentReplies(ctx, id, c.cid, 0, 10)
-        for (const rc of (rr?.comments || [])) out.push(mapBD(rc, c.cid))
-      } catch {}
-    }
-  }
+  // Fetch full replies for the top comments. We do NOT gate on
+  // reply_comment_total: without a login cookie Douyin reports it as 0 for
+  // every comment even when replies exist, which is why replies went missing.
+  // The reply endpoint works unauthenticated and returns an empty list for
+  // comments that have none, so it is safe to try for each top comment. Run
+  // them in parallel to keep the (TTL-gated, async) fetch fast.
+  const heads = list.slice(0, TOP_REPLY_FETCH).filter(c => {
+    const inline = c.reply_comment?.length || 0
+    const total = c.reply_comment_total ?? 0
+    // skip only when we already have every reply inline
+    return c.cid && !(total > 0 && inline >= total)
+  })
+  await Promise.all(heads.map(async (c) => {
+    try {
+      const rr = platform === 'tiktok'
+        ? await tiktokWeb.fetchPostCommentReply(ctx, id, c.cid, 0, 10, '')
+        : await douyin.fetchVideoCommentReplies(ctx, id, c.cid, 0, 10)
+      for (const rc of (rr?.comments || [])) out.push(mapBD(rc, c.cid))
+    } catch {}
+  }))
   return out.filter(c => c.comment_id)
 }
 

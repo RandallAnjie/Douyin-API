@@ -2596,7 +2596,7 @@ async function ingestWork(ctx, request, platform, id, target, refresh = false, o
 
 // src/utils/comments.js
 var TTL = 6 * 3600 * 1e3;
-var TOP_REPLY_FETCH = 10;
+var TOP_REPLY_FETCH = 15;
 function mapBD(c, parentId) {
   return {
     comment_id: c.cid,
@@ -2614,15 +2614,18 @@ async function collect(ctx, platform, id, count) {
   const list = resp?.comments || [];
   const out = list.map((c) => mapBD(c, null));
   for (const c of list) for (const rc of c.reply_comment || []) out.push(mapBD(rc, c.cid));
-  for (const c of list.slice(0, TOP_REPLY_FETCH)) {
-    if ((c.reply_comment_total ?? 0) > (c.reply_comment?.length || 0)) {
-      try {
-        const rr = platform === "tiktok" ? await fetchPostCommentReply(ctx, id, c.cid, 0, 10, "") : await fetchVideoCommentReplies(ctx, id, c.cid, 0, 10);
-        for (const rc of rr?.comments || []) out.push(mapBD(rc, c.cid));
-      } catch {
-      }
+  const heads = list.slice(0, TOP_REPLY_FETCH).filter((c) => {
+    const inline = c.reply_comment?.length || 0;
+    const total = c.reply_comment_total ?? 0;
+    return c.cid && !(total > 0 && inline >= total);
+  });
+  await Promise.all(heads.map(async (c) => {
+    try {
+      const rr = platform === "tiktok" ? await fetchPostCommentReply(ctx, id, c.cid, 0, 10, "") : await fetchVideoCommentReplies(ctx, id, c.cid, 0, 10);
+      for (const rc of rr?.comments || []) out.push(mapBD(rc, c.cid));
+    } catch {
     }
-  }
+  }));
   return out.filter((c) => c.comment_id);
 }
 async function fetchAndStoreComments(ctx, platform, id, { count = 50 } = {}) {
