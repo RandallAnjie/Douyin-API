@@ -5,6 +5,10 @@
 import { getAwemeId, getTiktokAwemeId } from '../utils/ids.js'
 import { fetchDouyinDetailCached, fetchTiktokAwemeCached } from '../utils/meta-cache.js'
 import { HTTPException } from '../utils/http-exception.js'
+import {
+  nwmCandidates, toPlayUrl, playUrlFromUri,
+  videoDimensions, isWatermarkUrl
+} from '../utils/media.js'
 
 const URL_TYPE = {
   0: 'video',
@@ -32,7 +36,7 @@ export async function resolvePlatformId (url) {
 }
 
 // Fetch the raw aweme detail by platform + id (cached). Returns
-// { raw, cached }.
+// { raw, cached, source, signed_error }.
 export async function fetchRawById (ctx, platform, id, refresh = false) {
   if (platform === 'douyin') {
     const { data, cached } = await fetchDouyinDetailCached(ctx, id, refresh)
@@ -48,17 +52,62 @@ export async function fetchRawById (ctx, platform, id, refresh = false) {
       }
       throw new HTTPException(502, { message: 'Douyin returned no aweme_detail (bad cookie/signature?)' })
     }
-    return { raw, cached }
+    return {
+      raw,
+      cached,
+      source: data.source || 'signed',
+      signed_error: data.signed_error || null
+    }
   }
   if (platform === 'tiktok') {
     const { data, cached } = await fetchTiktokAwemeCached(ctx, id, refresh)
-    return { raw: data, cached }
+    return { raw: data, cached, source: 'app', signed_error: null }
   }
   throw new HTTPException(400, { message: `Unknown platform: ${platform}` })
 }
 
+function douyinVideoData (video) {
+  const uri = video?.play_addr?.uri || video?.download_addr?.uri || ''
+  const nwmList = nwmCandidates(video)
+  const nwmHQ = nwmList[0] || (uri ? playUrlFromUri(uri, '1080p') : null)
+  const nwm = (uri ? playUrlFromUri(uri, '1080p') : null) || nwmHQ
+  const wmList = video?.download_addr?.url_list
+  const wmHQ = (Array.isArray(wmList) && wmList[0]) ||
+    (Array.isArray(video?.play_addr?.url_list) ? video.play_addr.url_list[0] : null) ||
+    (uri ? `https://aweme.snssdk.com/aweme/v1/playwm/?video_id=${uri}&radio=1080p&line=0` : null)
+  const dim = videoDimensions(video)
+  return {
+    wm_video_url: uri
+      ? `https://aweme.snssdk.com/aweme/v1/playwm/?video_id=${uri}&radio=1080p&line=0`
+      : wmHQ,
+    wm_video_url_HQ: wmHQ,
+    nwm_video_url: nwm,
+    nwm_video_url_HQ: nwmHQ,
+    width: dim.width,
+    height: dim.height
+  }
+}
+
+function tiktokVideoData (video) {
+  const nwmList = nwmCandidates(video)
+  const play0 = video?.play_addr?.url_list?.[0] || null
+  const nwmHQ = nwmList[0] || play0
+  const wm = video?.download_addr?.url_list?.[0] ?? null
+  const dim = videoDimensions(video)
+  return {
+    wm_video_url: wm,
+    wm_video_url_HQ: wm,
+    nwm_video_url: play0 || nwmHQ,
+    nwm_video_url_HQ: nwmHQ,
+    width: dim.width,
+    height: dim.height
+  }
+}
+
 // Pure mapper: raw aweme detail -> unified minimal schema.
-export function toMinimal (platform, videoId, data) {
+// `meta.source` is 'signed' | 'share' | 'app' (kept on the result so
+// the UI / cache / debug path can tell which upstream we used).
+export function toMinimal (platform, videoId, data, meta = {}) {
   const type = URL_TYPE[data.aweme_type] || 'video'
   const result = {
     type,
@@ -74,22 +123,16 @@ export function toMinimal (platform, videoId, data) {
       origin_cover: data.video?.origin_cover,
       dynamic_cover: data.video?.dynamic_cover
     },
-    hashtags: data.text_extra
+    hashtags: data.text_extra,
+    source: meta.source || data.source || null
   }
 
   if (platform === 'douyin') {
     if (type === 'video') {
-      const uri = data.video.play_addr.uri
-      const wmHQ = data.video.play_addr.url_list[0]
-      result.video_data = {
-        wm_video_url: `https://aweme.snssdk.com/aweme/v1/playwm/?video_id=${uri}&radio=1080p&line=0`,
-        wm_video_url_HQ: wmHQ,
-        nwm_video_url: `https://aweme.snssdk.com/aweme/v1/play/?video_id=${uri}&ratio=1080p&line=0`,
-        nwm_video_url_HQ: wmHQ.replace('playwm', 'play')
-      }
+      result.video_data = douyinVideoData(data.video || {})
     } else {
       const nwm = []; const wm = []
-      for (const i of data.images) {
+      for (const i of (data.images || [])) {
         nwm.push(i.url_list[0])
         wm.push(i.download_url_list[0])
       }
@@ -97,16 +140,10 @@ export function toMinimal (platform, videoId, data) {
     }
   } else { // tiktok
     if (type === 'video') {
-      const wm = data.video?.download_addr?.url_list?.[0] ?? null
-      result.video_data = {
-        wm_video_url: wm,
-        wm_video_url_HQ: wm,
-        nwm_video_url: data.video.play_addr.url_list[0],
-        nwm_video_url_HQ: data.video.bit_rate[0].play_addr.url_list[0]
-      }
+      result.video_data = tiktokVideoData(data.video || {})
     } else {
       const nwm = []; const wm = []
-      for (const i of data.image_post_info.images) {
+      for (const i of (data.image_post_info?.images || [])) {
         nwm.push(i.display_image.url_list[0])
         wm.push(i.owner_watermark_image.url_list[0])
       }
@@ -118,9 +155,9 @@ export function toMinimal (platform, videoId, data) {
 
 export async function hybridParseSingleVideo (ctx, url, minimal = false, refresh = false) {
   const { platform, id } = await resolvePlatformId(url)
-  const { raw } = await fetchRawById(ctx, platform, id, refresh)
+  const { raw, source } = await fetchRawById(ctx, platform, id, refresh)
   if (!minimal) return raw
-  return toMinimal(platform, id, raw)
+  return toMinimal(platform, id, raw, { source })
 }
 
 // Pick a concrete CDN URL from a minimal result for a proxy `kind`.
@@ -130,9 +167,13 @@ export function resolveKindUrl (minimal, kind) {
   if (kind === 'nwm' || kind === 'wm') {
     const vd = minimal.video_data
     if (!vd) throw new HTTPException(404, { message: 'No video for this resource' })
-    const url = kind === 'nwm'
+    let url = kind === 'nwm'
       ? (vd.nwm_video_url_HQ || vd.nwm_video_url)
       : (vd.wm_video_url_HQ || vd.wm_video_url)
+    if (kind === 'nwm' && url) url = toPlayUrl(url)
+    if (kind === 'nwm' && isWatermarkUrl(url)) {
+      throw new HTTPException(502, { message: 'nwm resolved to a watermarked playwm URL' })
+    }
     return { url, contentType: 'video/mp4', ext: 'mp4' }
   }
   if (kind === 'cover') {
@@ -161,10 +202,7 @@ export function mediaCandidates (platform, raw, kind) {
   const video = raw.video || {}
 
   if (kind === 'nwm') {
-    push(video.play_addr?.url_list)
-    if (Array.isArray(video.bit_rate)) for (const b of video.bit_rate) push(b?.play_addr?.url_list)
-    const uri = video.play_addr?.uri
-    if (uri) out.push(`https://aweme.snssdk.com/aweme/v1/play/?video_id=${uri}&ratio=1080p&line=0`)
+    out.push(...nwmCandidates(video))
   } else if (kind === 'wm') {
     push(video.download_addr?.url_list)
     push(video.play_addr?.url_list)
@@ -187,6 +225,8 @@ export function mediaCandidates (platform, raw, kind) {
       push(wm ? im?.owner_watermark_image?.url_list : im?.display_image?.url_list)
     }
   }
-  // Prefer https, dedup, keep order.
-  return [...new Set(out.map(u => u.replace(/^http:/, 'https:')))]
+  // Prefer https, dedup, keep order. nwm is already filtered.
+  const https = [...new Set(out.map(u => String(u).replace(/^http:/, 'https:')))]
+  if (kind === 'nwm') return https.filter(u => !isWatermarkUrl(u))
+  return https
 }

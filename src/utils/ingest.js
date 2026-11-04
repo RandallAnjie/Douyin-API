@@ -33,8 +33,11 @@ function warmMedia (ctx, platform, id, raw, min, warmVideo) {
 export async function ingestWork (ctx, request, platform, id, target, refresh = false, opts = {}) {
   // opts.raw lets callers (e.g. cron with a trending-feed batch) pass the
   // already-fetched record so we don't re-fetch it per id (avoids 429s).
-  const { raw, cached } = opts.raw ? { raw: opts.raw, cached: false } : await fetchRawById(ctx, platform, id, refresh)
-  const min = toMinimal(platform, id, raw)
+  const fetched = opts.raw
+    ? { raw: opts.raw, cached: false, source: opts.source || null, signed_error: null }
+    : await fetchRawById(ctx, platform, id, refresh)
+  const { raw, cached, source, signed_error } = fetched
+  const min = toMinimal(platform, id, raw, { source })
   const a = min.author || {}
   const s = min.statistics || {}
   await logQuery(ctx, {
@@ -68,10 +71,13 @@ export async function ingestWork (ctx, request, platform, id, target, refresh = 
       stats: min.statistics || null,
       images: min.type === 'image' && min.image_data
         ? min.image_data.no_watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `image${i}`))
-        : undefined
+        : undefined,
+      width: min.video_data?.width || null,
+      height: min.video_data?.height || null,
+      source: min.source || source || null
     }
   })
   // Proactively cache the work's media into R2 (best-effort, background).
   warmMedia(ctx, platform, id, raw, min, opts.warmVideo !== false)
-  return { raw, min, cached }
+  return { raw, min, cached, source, signed_error }
 }

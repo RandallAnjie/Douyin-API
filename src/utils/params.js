@@ -83,11 +83,18 @@ export function extractVerifyFp (cookieStr) {
   return cookieGet(parseCookie(cookieStr), ['s_v_web_id'])
 }
 
+// webid lives in page localStorage, not the jar we have. If a cookie
+// happens to carry it, send it in the browser slot (before uifid).
+export function extractWebid (cookieStr) {
+  return cookieGet(parseCookie(cookieStr), ['webid', 'WEBID'])
+}
+
 export function sessionFromCookie (cookieStr) {
   return {
     uifid: extractUifid(cookieStr),
     msToken: extractMsToken(cookieStr),
-    verifyFp: extractVerifyFp(cookieStr)
+    verifyFp: extractVerifyFp(cookieStr),
+    webid: extractWebid(cookieStr)
   }
 }
 
@@ -100,6 +107,7 @@ export function sessionFromCookie (cookieStr) {
 export function baseRequestParams (msToken = '', opts = {}) {
   const uifid = opts.uifid ?? ''
   const verifyFp = opts.verifyFp ?? ''
+  const webid = opts.webid ?? ''
   const params = {
     device_platform: 'webapp',
     aid: '6383',
@@ -133,9 +141,13 @@ export function baseRequestParams (msToken = '', opts = {}) {
     show_live_replay_strategy: '1',
     time_list_query: '0',
     whale_cut_token: '',
-    update_version_code: '170400',
-    uifid
+    update_version_code: '170400'
   }
+  // Browser order as of 2026-08: webid, uifid, verifyFp, fp, msToken.
+  // webid is omitted unless the cookie actually has it — we cannot mint
+  // a valid one from the worker.
+  if (webid) params.webid = webid
+  params.uifid = uifid
   // Only emit verifyFp/fp when we have the cookie-issued value. A
   // generated fp next to a real uifid is rejected as Signature Not Found.
   if (verifyFp) {

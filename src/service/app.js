@@ -83,8 +83,11 @@ textarea::placeholder{color:var(--faint)}
 #out{margin-top:6px}
 .card{display:flex;gap:20px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
 @media(max-width:560px){.card{flex-direction:column}}
-.frame{position:relative;flex:0 0 200px;aspect-ratio:9/16;border-radius:10px;overflow:hidden;background:#0e0d12;border:1px solid var(--line)}
-.frame img,.frame video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
+.frame{position:relative;flex:0 0 auto;width:min(240px,100%);max-height:min(72vh,640px);aspect-ratio:9/16;border-radius:10px;overflow:hidden;background:#0e0d12;border:1px solid var(--line)}
+.frame.is-h{width:min(520px,100%);max-height:min(52vh,420px)}
+.frame img,.frame video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
+.playhint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:42px;color:#fff;text-shadow:0 2px 12px #000;background:rgba(0,0,0,.18);pointer-events:none}
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:rgba(20,18,26,.92);color:var(--teal);font-family:var(--mono);font-size:12px;letter-spacing:.08em;padding:8px 14px;border-radius:8px;border:1px solid var(--line);z-index:80;pointer-events:none}
 .badge{position:absolute;left:10px;top:10px;font-family:var(--mono);font-size:11px;letter-spacing:.1em;background:rgba(20,18,26,.78);color:var(--teal);padding:3px 8px;border-radius:6px;backdrop-filter:blur(4px)}
 .meta{flex:1;min-width:0;display:flex;flex-direction:column}
 .nick{font-family:var(--serif);font-size:20px;letter-spacing:.02em}
@@ -175,12 +178,63 @@ footer a{color:var(--muted)}
     }catch(e){if(my===inflight)setStatus('网络错误：'+e.message,'err')}
   }
 
-  function withDownload(href){return href+(href.indexOf('?')>-1?'&':'?')+'download=1'}
+  function withFlag(href,flag){if(!href)return href;return href+(href.indexOf('?')>-1?'&':'?')+flag}
+  function withDownload(href){return withFlag(href,'download=1')}
   function dlBtn(href,label){var a=el('a','btn',label);a.href=withDownload(href);a.setAttribute('download','');return a}
+  function toast(msg){
+    var t=el('div','toast',msg)
+    document.body.appendChild(t)
+    setTimeout(function(){if(t.parentNode)t.parentNode.removeChild(t)},1600)
+  }
+  function fallbackCopy(text,done){
+    var ta=document.createElement('textarea')
+    ta.value=text;ta.setAttribute('readonly','');ta.style.cssText='position:fixed;left:-9999px;top:0'
+    document.body.appendChild(ta);ta.select();ta.setSelectionRange(0,text.length)
+    var ok=false
+    try{ok=document.execCommand('copy')}catch(e){}
+    document.body.removeChild(ta)
+    if(ok)done()
+  }
+  function copyText(text,done){
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done,function(){fallbackCopy(text,done)})
+    }else fallbackCopy(text,done)
+  }
   function copyBtn(text,label){
     var b=el('button','btn ghost',label)
-    b.addEventListener('click',function(){navigator.clipboard.writeText(text).then(function(){var o=b.textContent;b.textContent='已复制';setTimeout(function(){b.textContent=o},1200)})})
+    b.addEventListener('click',function(){copyText(text,function(){var o=b.textContent;b.textContent='已复制';toast('已复制');setTimeout(function(){b.textContent=o},1200)})})
     return b
+  }
+  function workPageUrl(platform,id){return location.origin+'/work?platform='+encodeURIComponent(platform)+'&id='+encodeURIComponent(id)}
+  function shareBtn(platform,id){
+    var b=el('button','btn ghost','分享')
+    b.addEventListener('click',function(){copyText(workPageUrl(platform,id),function(){var o=b.textContent;b.textContent='已复制';toast('已复制');setTimeout(function(){b.textContent=o},1200)})})
+    return b
+  }
+  function applyAspect(frame,w,h){
+    w=Number(w)||0;h=Number(h)||0
+    if(!(w>0&&h>0))return
+    frame.style.aspectRatio=w+' / '+h
+    if(w>=h)frame.classList.add('is-h');else frame.classList.remove('is-h')
+  }
+  function clickToPlay(frame,cover,playUrl,w,h){
+    applyAspect(frame,w,h)
+    var im=el('img');im.src=cover||'';im.alt='预览';im.loading='lazy'
+    frame.appendChild(im)
+    frame.appendChild(el('span','playhint','▶'))
+    frame.style.cursor='pointer'
+    frame.addEventListener('click',function start(){
+      frame.removeEventListener('click',start)
+      frame.innerHTML=''
+      var v=el('video');v.controls=true;v.autoplay=true;v.playsInline=true;v.preload='metadata'
+      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
+      if(cover)v.poster=cover
+      v.src=playUrl
+      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
+      frame.appendChild(v)
+      frame.appendChild(el('span','badge','视频'))
+      var p=v.play();if(p&&p.catch)p.catch(function(){})
+    })
   }
   function stat(label,n){var w=el('span','stat');w.appendChild(el('b',null,fmt(n)));w.appendChild(el('i',null,label));return w}
 
@@ -191,13 +245,14 @@ footer a{color:var(--muted)}
     var frame=el('div','frame')
     var cover=d.cover_data&&d.cover_data.cover?d.cover_data.cover:''
     var firstImg=(d.image_data&&(d.image_data.no_watermark_image_list||[])[0])||''
-    if(d.type==='video'&&d.video_data&&d.video_data.nwm_video_url){
-      var v=el('video');v.controls=true;v.playsInline=true;v.preload='metadata';v.setAttribute('playsinline','')
-      if(cover)v.poster=cover
-      v.src=d.video_data.nwm_video_url
-      frame.appendChild(v)
+    var vw=d.video_data&&d.video_data.width,vh=d.video_data&&d.video_data.height
+    var playUrl=d.video_data&&(d.video_data.nwm_video_url_HQ||d.video_data.nwm_video_url)
+    if(d.type==='video'&&playUrl){
+      clickToPlay(frame,cover,playUrl,vw,vh)
     }else{
-      var im0=el('img');im0.src=cover||firstImg;im0.alt='预览';im0.loading='lazy';frame.appendChild(im0)
+      var im0=el('img');im0.src=cover||firstImg;im0.alt='预览';im0.loading='lazy'
+      im0.addEventListener('load',function(){if(im0.naturalWidth&&im0.naturalHeight)applyAspect(frame,im0.naturalWidth,im0.naturalHeight)})
+      frame.appendChild(im0)
     }
     frame.appendChild(el('span','badge',d.type==='image'?'图集':'视频'))
     card.appendChild(frame)
@@ -211,13 +266,16 @@ footer a{color:var(--muted)}
       meta.appendChild(st)}
 
     var acts=el('div','acts')
-    if(d.type==='video'&&d.video_data){
-      acts.appendChild(dlBtn(d.video_data.nwm_video_url,'下载无水印'))
-      acts.appendChild(copyBtn(d.video_data.nwm_video_url,'复制直链'))
+    if(d.type==='video'&&playUrl){
+      acts.appendChild(dlBtn(playUrl,'下载'))
+      acts.appendChild(copyBtn(playUrl,'复制直链'))
     }
     if(d.type==='image'&&d.image_data){
-      (d.image_data.no_watermark_image_list||[]).forEach(function(u,i){acts.appendChild(dlBtn(u,'图'+(i+1)))})
+      var imgs=d.image_data.no_watermark_image_list||[]
+      if(imgs[0])acts.appendChild(dlBtn(imgs[0],'下载'))
+      imgs.forEach(function(u,i){acts.appendChild(dlBtn(u,'图'+(i+1)))})
     }
+    if(d.platform&&d.video_id)acts.appendChild(shareBtn(d.platform,d.video_id))
     if(!lastGuest){
       var raw=el('button','btn ghost','原始 JSON')
       raw.addEventListener('click',function(){var p=$('#raw');if(!p){p=el('pre');p.id='raw';out.appendChild(p)}p.textContent=JSON.stringify(d,null,2)})

@@ -83,10 +83,11 @@ const DOCS_HTML = `<!doctype html>
 <h2>反代 + R2 缓存 <small>/proxy</small></h2>
 <div class=route><span class=m>GET</span><span class=lock>🔒</span> <code>/proxy?platform=douyin|tiktok&id=&kind=nwm&download=0&refresh=0</code></div>
 <small>
-按 ID 稳定缓存的媒体反代：worker 用正确的 Referer 拉取 CDN 字节并存入 R2（key = <code>media/{platform}/{id}/{kind}</code>），签名 url 过期也照样命中；支持 Range（视频拖动）。<br>
-kind: <code>nwm</code>（无水印视频 HQ）· <code>wm</code>（有水印视频）· <code>cover</code>（封面）· <code>image0/1/…</code>（无水印图）· <code>imagewm0/1/…</code>（有水印图）。<br>
+按 ID 稳定缓存的媒体反代：worker 用正确的 Referer 拉取 CDN 字节并存入 R2（key = <code>media/v2/{platform}/{id}/{kind}</code>），签名 url 过期也照样命中；支持 Range（视频拖动）。<code>?download=1</code> 加 <code>Content-Disposition: attachment</code>（文件名 <code>{author}-{desc}-{id}.mp4</code>）。<br>
+kind: <code>nwm</code>（无水印视频 HQ；playwm 会改写成 play，永不回水印链）· <code>wm</code>（有水印视频）· <code>cover</code>（封面）· <code>image0/1/…</code>（无水印图）· <code>imagewm0/1/…</code>（有水印图）。<br>
 鉴权签名串为 <code>"proxy{platform}{id}"</code>（与 kind 无关，一个 auth 覆盖该作品所有 kind）。video_data?proxy=1 重写出的链接已自带 <code>&auth=</code>，可直接当播放器 src。<br>
-元数据（解析后的视频信息）以 JSON 文件缓存在 R2 <code>meta/{platform}/{id}.json</code>，默认 1 小时（env <code>META_CACHE_TTL</code> 可调，<code>?refresh=1</code> 强刷）。需要绑定 R2：env <code>DOUYIN_R2</code>（未绑定则全部退化为不缓存、实时直连）。
+元数据（解析后的视频信息）以 JSON 文件缓存在 R2 <code>meta/v2/{platform}/{id}.json</code>，默认 1 小时（env <code>META_CACHE_TTL</code> 可调，<code>?refresh=1</code> 强刷）。需要绑定 R2：env <code>DOUYIN_R2</code>（未绑定则全部退化为不缓存、实时直连）。<br>
+<code>source</code> 字段标记 <code>signed</code>（web detail）或 <code>share</code>（iesdouyin 分享页回退）。master token 加 <code>?debug=1</code> 可看脱敏后的 signed-endpoint 失败原因（uifid/msToken/fp 已 REDACTED）。
 </small>
 
 </body></html>`

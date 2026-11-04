@@ -56,6 +56,21 @@ export function requireProxyAuth (request, ctx, platform, id) {
   throw new HTTPException(401, { message: 'proxy: bad or expired auth' })
 }
 
+// True only for the master token (not per-resource HMAC). Used to gate
+// ?debug=1 so guests cannot fish for upstream error strings.
+export function isMasterToken (request, ctx) {
+  const url = new URL(request.url)
+  const token = url.searchParams.get('token') || ''
+  return Boolean(token) && token === ctx.config.auth.token
+}
+
+export function wantsDebug (request, ctx) {
+  const url = new URL(request.url)
+  const v = String(url.searchParams.get('debug') || '').toLowerCase()
+  if (!['1', 'true', 'yes', 'on'].includes(v)) return false
+  return isMasterToken(request, ctx)
+}
+
 // Throws HTTPException(401) unless the caller is authorised. Returns
 // nothing on success. `primaryId` is the route's main identifier
 // (aweme_id / itemId / sec_user_id / url …) — '' when there isn't one.

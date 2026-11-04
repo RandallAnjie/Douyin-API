@@ -12,28 +12,60 @@ import {
   baseRequestParams, baseLiveParams, baseLive2Params,
   urlencode, rawJoin, sessionFromCookie
 } from '../utils/params.js'
-import { fetchGetJson, buildHeaders } from '../utils/base-crawler.js'
-import { genFalseMsToken, genVerifyFp, genTtwid } from '../utils/tokens.js'
+import { fetchGetJson, buildHeaders, redactUpstreamUrl } from '../utils/base-crawler.js'
+import { genFalseMsToken, genRealMsToken, genVerifyFp, genTtwid } from '../utils/tokens.js'
 import { DouyinEndpoints as EP, DOUYIN_REFERER } from './endpoints.js'
 
 function cookieOf (ctx) {
   return ctx?.config?.douyin?.cookie || ''
 }
 
+// Real msToken from mssdk, cached per isolate so we don't hit the
+// report endpoint on every comment/profile call. Falls back to the
+// local fake token (same as genFalseMsToken) on any failure.
+let cachedRealMs = { value: '', at: 0 }
+let inflightRealMs = null
+const REAL_MS_TTL_MS = 10 * 60 * 1000
+
+async function realMsTokenCached () {
+  const now = Date.now()
+  if (cachedRealMs.value && (now - cachedRealMs.at) < REAL_MS_TTL_MS) return cachedRealMs.value
+  if (!inflightRealMs) {
+    inflightRealMs = genRealMsToken()
+      .then((v) => {
+        cachedRealMs = { value: v, at: Date.now() }
+        return v
+      })
+      .finally(() => { inflightRealMs = null })
+  }
+  return inflightRealMs
+}
+
+// Cookie jar has UIFID but often no msToken / s_v_web_id. Prefer the
+// cookie msToken; otherwise ask mssdk (fake token on failure). Never
+// invent a verifyFp — a generated fp next to a real UIFID is Argus
+// "Signature Not Found".
+export async function resolveMsToken (ctx) {
+  const session = sessionFromCookie(cookieOf(ctx))
+  if (session.msToken) return session.msToken
+  return realMsTokenCached()
+}
+
 // Shared BaseRequestModel fill for every www.douyin.com web call:
 // uifid from the cookie (UIFID / UIFID_TEMP / uifid), msToken from the
-// cookie or a generated fake token, verifyFp/fp only when s_v_web_id is
-// present. Extra keys are appended (pydantic subclass field order).
-export function buildDouyinWebParams (ctx, extra = {}) {
+// cookie or genRealMsToken (fake fallback), verifyFp/fp only when
+// s_v_web_id is present. Extra keys are appended (pydantic subclass
+// field order).
+export async function buildDouyinWebParams (ctx, extra = {}) {
   const session = sessionFromCookie(cookieOf(ctx))
-  const msToken = session.msToken || genFalseMsToken()
+  const msToken = session.msToken || await resolveMsToken(ctx)
   return {
-    ...baseRequestParams(msToken, { uifid: session.uifid, verifyFp: session.verifyFp }),
+    ...baseRequestParams(msToken, { uifid: session.uifid, verifyFp: session.verifyFp, webid: session.webid }),
     ...extra
   }
 }
 
-async function douyinHeaders (ctx) {
+async function douyinHeaders (ctx, msToken) {
   let cookie = cookieOf(ctx)
   if (!cookie) {
     // No operator cookie bound — bootstrap a minimal ttwid cookie so
@@ -41,10 +73,18 @@ async function douyinHeaders (ctx) {
     const ttwid = await genTtwid()
     if (ttwid) cookie = `ttwid=${ttwid}`
   }
-  const extra = {}
+  const session = sessionFromCookie(cookie)
+  // Keep Cookie and query msToken in sync when we had to mint one.
+  if (msToken && !session.msToken) {
+    cookie = cookie ? `${cookie}; msToken=${msToken}` : `msToken=${msToken}`
+  }
+  const extra = {
+    // MediaCrawler: Argus currently accepts a placeholder x-tt-argus;
+    // missing it can surface as Signature Not Found after uifid is set.
+    'x-tt-argus': '1'
+  }
   // Browser XHRs send uifid as both a query param and a request header.
-  const uifid = sessionFromCookie(cookie).uifid
-  if (uifid) extra.uifid = uifid
+  if (session.uifid) extra.uifid = session.uifid
   return buildHeaders({
     userAgent: ctx.config.douyin.userAgent,
     referer: DOUYIN_REFERER,
@@ -69,11 +109,23 @@ export function signedABogusUrl (baseUrl, params) {
 
 async function aBogusGet (ctx, baseUrl, params) {
   const { url } = signedABogusUrl(baseUrl, params)
-  return fetchGetJson(url, await douyinHeaders(ctx))
+  return fetchGetJson(url, await douyinHeaders(ctx, params.msToken))
+}
+
+function signedFailReason (data, err) {
+  if (err?.message) return redactUpstreamUrl(err.message)
+  if (!data) return 'signed endpoint returned nothing'
+  const code = data.status_code
+  const msg = data.status_msg || data.filter_detail?.filter_reason || ''
+  return redactUpstreamUrl(
+    `signed endpoint status_code=${code == null ? 'n/a' : code}` +
+    (msg ? ` ${msg}` : '') +
+    ' (no aweme_detail)'
+  )
 }
 
 export async function fetchOneVideo (ctx, awemeId) {
-  const params = buildDouyinWebParams(ctx, { aweme_id: awemeId })
+  const params = await buildDouyinWebParams(ctx, { aweme_id: awemeId })
   let data = null
   let primaryErr = null
   try {
@@ -81,22 +133,32 @@ export async function fetchOneVideo (ctx, awemeId) {
   } catch (err) {
     primaryErr = err
   }
-  if (data && data.aweme_detail) return data
+  if (data && data.aweme_detail) return { ...data, source: 'signed' }
   // Signed web detail 403s (Argus Uifid / signature) or returns empty
   // aweme_detail — the iesdouyin share page often still embeds the item.
+  const signedError = signedFailReason(data, primaryErr)
+  try { console.error('[douyin] signed detail failed, trying share fallback', signedError) } catch {}
   const share = await fetchShareDetail(ctx, awemeId)
   if (share.aweme_detail) {
     return {
       ...data,
       aweme_detail: share.aweme_detail,
-      filter_detail: share.filter_detail || data?.filter_detail || null
+      filter_detail: share.filter_detail || data?.filter_detail || null,
+      source: 'share',
+      signed_error: signedError
     }
   }
   if (share.filter_detail && !data?.filter_detail) {
-    return { ...data, aweme_detail: data?.aweme_detail || null, filter_detail: share.filter_detail }
+    return {
+      ...data,
+      aweme_detail: data?.aweme_detail || null,
+      filter_detail: share.filter_detail,
+      source: 'share',
+      signed_error: signedError
+    }
   }
   if (primaryErr) throw primaryErr
-  return data
+  return { ...data, source: 'share', signed_error: signedError }
 }
 
 // Fallback source: the iesdouyin mobile share page embeds the full aweme
@@ -134,15 +196,15 @@ export async function fetchShareDetail (ctx, awemeId) {
   }
 }
 
-export function fetchUserPostVideos (ctx, secUserId, maxCursor, count) {
-  const params = buildDouyinWebParams(ctx, {
+export async function fetchUserPostVideos (ctx, secUserId, maxCursor, count) {
+  const params = await buildDouyinWebParams(ctx, {
     max_cursor: String(maxCursor), count: String(count), sec_user_id: secUserId
   })
   return aBogusGet(ctx, EP.USER_POST, params)
 }
 
-export function fetchUserLikeVideos (ctx, secUserId, maxCursor, count) {
-  const params = buildDouyinWebParams(ctx, {
+export async function fetchUserLikeVideos (ctx, secUserId, maxCursor, count) {
+  const params = await buildDouyinWebParams(ctx, {
     max_cursor: String(maxCursor), count: String(count), sec_user_id: secUserId
   })
   return aBogusGet(ctx, EP.USER_FAVORITE_A, params)
@@ -152,8 +214,8 @@ export function fetchUserLikeVideos (ctx, secUserId, maxCursor, count) {
 // video cards carry aweme_info.aweme_id. Used by cron to turn hot-search
 // KEYWORDS into actual videos. Needs the operator cookie; risk-control may
 // reject it (caught by the caller).
-export function fetchGeneralSearch (ctx, keyword, offset = 0, count = 10) {
-  const params = buildDouyinWebParams(ctx, {
+export async function fetchGeneralSearch (ctx, keyword, offset = 0, count = 10) {
+  const params = await buildDouyinWebParams(ctx, {
     search_channel: 'aweme_general',
     enable_history: '1',
     keyword,
@@ -172,8 +234,8 @@ export function fetchGeneralSearch (ctx, keyword, offset = 0, count = 10) {
 // --- X-Bogus endpoints ---
 
 // Hot-search board (trending KEYWORDS, not videos). X-Bogus.
-export function fetchHotSearchList (ctx) {
-  const params = buildDouyinWebParams(ctx, { detail_list: '1' })
+export async function fetchHotSearchList (ctx) {
+  const params = await buildDouyinWebParams(ctx, { detail_list: '1' })
   return xBogusGet(ctx, EP.HOT_SEARCH, params)
 }
 
@@ -181,31 +243,31 @@ async function xBogusGet (ctx, baseUrl, params) {
   const paramStr = rawJoin(params)
   const { xBogus } = getXBogus(paramStr, ctx.config.douyin.userAgent)
   const url = `${baseUrl}?${paramStr}&X-Bogus=${xBogus}`
-  return fetchGetJson(url, await douyinHeaders(ctx))
+  return fetchGetJson(url, await douyinHeaders(ctx, params.msToken))
 }
 
-export function handlerUserProfile (ctx, secUserId) {
-  const params = buildDouyinWebParams(ctx, { sec_user_id: secUserId })
+export async function handlerUserProfile (ctx, secUserId) {
+  const params = await buildDouyinWebParams(ctx, { sec_user_id: secUserId })
   return xBogusGet(ctx, EP.USER_DETAIL, params)
 }
 
-export function fetchUserMixVideos (ctx, mixId, cursor, count) {
-  const params = buildDouyinWebParams(ctx, {
+export async function fetchUserMixVideos (ctx, mixId, cursor, count) {
+  const params = await buildDouyinWebParams(ctx, {
     cursor: String(cursor), count: String(count), mix_id: mixId
   })
   return xBogusGet(ctx, EP.MIX_AWEME, params)
 }
 
-export function fetchVideoComments (ctx, awemeId, cursor, count) {
-  const params = buildDouyinWebParams(ctx, {
+export async function fetchVideoComments (ctx, awemeId, cursor, count) {
+  const params = await buildDouyinWebParams(ctx, {
     aweme_id: awemeId, cursor: String(cursor), count: String(count),
     item_type: '0', insert_ids: '', whale_cut_token: '', cut_version: '1', rcFT: ''
   })
   return xBogusGet(ctx, EP.POST_COMMENT, params)
 }
 
-export function fetchVideoCommentReplies (ctx, itemId, commentId, cursor, count) {
-  const params = buildDouyinWebParams(ctx, {
+export async function fetchVideoCommentReplies (ctx, itemId, commentId, cursor, count) {
+  const params = await buildDouyinWebParams(ctx, {
     item_id: itemId, comment_id: commentId, cursor: String(cursor),
     count: String(count), item_type: '0'
   })
@@ -222,8 +284,8 @@ export function fetchUserLiveVideosByRoomId (ctx, roomId) {
   return xBogusGet(ctx, EP.LIVE_INFO_ROOM_ID, params)
 }
 
-export function fetchLiveGiftRanking (ctx, roomId, rankType) {
-  const params = buildDouyinWebParams(ctx, {
+export async function fetchLiveGiftRanking (ctx, roomId, rankType) {
+  const params = await buildDouyinWebParams(ctx, {
     webcast_sdk_version: '2450', room_id: String(roomId), rank_type: String(rankType)
   })
   return xBogusGet(ctx, EP.LIVE_GIFT_RANK, params)

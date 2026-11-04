@@ -6,12 +6,18 @@
 // signed CDN URL, so the cache keeps hitting after the upstream URL's
 // token rotates. Metadata JSON freshness is judged from R2's own
 // `uploaded` timestamp against a TTL.
+//
+// CACHE_VERSION is bumped when a previous generation of objects is
+// known-bad (e.g. v1 nwm bytes were watermarked playwm streams). Old
+// keys are simply never read again — no manual R2 delete required.
+
+export const CACHE_VERSION = 'v2'
 
 export const mediaKey = (platform, id, kind) =>
-  `media/${platform}/${encodeURIComponent(String(id))}/${kind}`
+  `media/${CACHE_VERSION}/${platform}/${encodeURIComponent(String(id))}/${kind}`
 
 export const metaKey = (platform, id) =>
-  `meta/${platform}/${encodeURIComponent(String(id))}.json`
+  `meta/${CACHE_VERSION}/${platform}/${encodeURIComponent(String(id))}.json`
 
 function parseRangeHeader (header, totalSize) {
   if (!header) return null

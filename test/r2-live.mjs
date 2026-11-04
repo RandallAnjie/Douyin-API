@@ -19,7 +19,7 @@ let fail=0; const ok=(n,c,x='')=>{ if(!c)fail++; console.log(`${c?'PASS':'FAIL'}
 let r=await call(`https://x/api/douyin/web/fetch_one_video?aweme_id=${id}&token=t`)
 ok('fetch_one_video #1 miss', r.headers.get('x-cache')==='miss', 'x-cache='+r.headers.get('x-cache'))
 await flush()
-ok('meta json stored in R2', bucket.store.has(`meta/douyin/${id}.json`))
+ok('meta json stored in R2', bucket.store.has(`meta/v2/douyin/${id}.json`))
 r=await call(`https://x/api/douyin/web/fetch_one_video?aweme_id=${id}&token=t`)
 ok('fetch_one_video #2 hit', r.headers.get('x-cache')==='hit', 'x-cache='+r.headers.get('x-cache'))
 
@@ -38,7 +38,7 @@ const auth=new URL(nwm).searchParams.get('auth') // same canonical proxy+douyin+
 r=await call(`https://x/proxy?platform=douyin&id=${id}&kind=cover&auth=${auth}`)
 ok('proxy cover #1 -> 200', r.status===200, 'src='+r.headers.get('x-cache-source')+' ct='+r.headers.get('content-type'))
 await r.arrayBuffer(); await flush()
-ok('media bytes cached in R2', bucket.store.has(`media/douyin/${id}/cover`))
+ok('media bytes cached in R2', bucket.store.has(`media/v2/douyin/${id}/cover`))
 r=await call(`https://x/proxy?platform=douyin&id=${id}&kind=cover&auth=${auth}`)
 ok('proxy cover #2 -> r2 hit', r.headers.get('x-cache-source')==='r2', 'src='+r.headers.get('x-cache-source'))
 
