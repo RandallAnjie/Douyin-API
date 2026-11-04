@@ -9,8 +9,9 @@
 // scrubbing.
 import { HTTPException } from '../utils/http-exception.js'
 import { requireProxyAuth } from '../utils/auth.js'
-import { fetchRawById, mediaCandidates } from '../hybrid/crawler.js'
-import { serveFromR2, teeIntoCache, r2PutRetry, r2PutMultipart, warmUrl, mediaKey } from '../utils/r2cache.js'
+import { fetchRawById, mediaCandidates, toMinimal } from '../hybrid/crawler.js'
+import { serveFromR2, teeIntoCache, r2PutRetry, warmUrl, mediaKey, metaKey, getJson } from '../utils/r2cache.js'
+import { isWatermarkUrl, downloadFilename, contentDispositionAttachment } from '../utils/media.js'
 
 // Media at or under this is buffered so the R2 write can retry from
 // memory (the plane PUT 502s intermittently). A *known* larger body is
@@ -41,17 +42,22 @@ export async function proxyService (request, ctx) {
   const download = ['1', 'true', 'yes'].includes(String(url.searchParams.get('download')).toLowerCase())
   const bucket = ctx.config.mediaR2
   const key = mediaKey(platform, id, kind)
+  const extHint = (kind === 'nwm' || kind === 'wm') ? 'mp4' : 'jpeg'
+
+  const filenameFor = async (raw) => {
+    if (!download) return null
+    return resolveDownloadName(bucket, platform, id, kind, raw, extHint)
+  }
 
   // R2 hit first (cheap, handles Range). minSize bypasses a poisoned
   // (too-small) entry so it self-heals on the next fetch.
   if (bucket && !refresh) {
     const hit = await serveFromR2(bucket, request, key, undefined, minSizeForKind(kind))
-    if (hit) return withDisposition(hit, download, platform, id, kind)
+    if (hit) return withDisposition(hit, download, await filenameFor(null), extHint)
   }
 
   const isVideo = kind === 'nwm' || kind === 'wm'
   const contentType = isVideo ? 'video/mp4' : 'image/jpeg'
-  const ext = isVideo ? 'mp4' : 'jpeg'
   const reqHeaders = {
     'User-Agent': platform === 'douyin' ? ctx.config.douyin.userAgent : ctx.config.tiktok.userAgent,
     Referer: REFERER[platform]
@@ -61,9 +67,10 @@ export async function proxyService (request, ctx) {
   // Probe candidates until one actually serves media.
   const probe = async (cands) => {
     for (const u of cands) {
+      if (kind === 'nwm' && isWatermarkUrl(u)) continue
       let r
       try { r = await fetch(u, { headers: rangeHeader ? { ...reqHeaders, range: rangeHeader } : reqHeaders }) } catch { continue }
-      if (looksLikeMedia(r, kind, !!rangeHeader)) return { upstream: r, usedUrl: u }
+      if (looksLikeMedia(r, kind, !!rangeHeader, u)) return { upstream: r, usedUrl: u }
       try { await r.body?.cancel() } catch {}
     }
     return { upstream: null, usedUrl: null }
@@ -100,18 +107,18 @@ export async function proxyService (request, ctx) {
     // Genuine sub-range (seek). Serve the slice now, and warm the WHOLE
     // file into R2 in the background (deduped) so later reads hit cache.
     if (bucket) warmUrl(ctx, bucket, key, usedUrl, reqHeaders, contentType)
-    return withDisposition(wrapMedia(upstream, contentType, 'upstream-range'), download, platform, id, kind, ext)
+    return withDisposition(wrapMedia(upstream, contentType, 'upstream-range'), download, await filenameFor(raw), extHint)
   }
   if (openFromZero) {
     try { await upstream.body?.cancel() } catch {}
     try { upstream = await fetch(usedUrl, { headers: reqHeaders }) } catch { upstream = null }
-    if (!upstream || !looksLikeMedia(upstream, kind, false)) {
+    if (!upstream || !looksLikeMedia(upstream, kind, false, usedUrl)) {
       throw new HTTPException(502, { message: `re-fetch failed for kind=${kind}` })
     }
   }
 
   if (!bucket) {
-    return withDisposition(wrapMedia(upstream, contentType, 'upstream-plain'), download, platform, id, kind, ext)
+    return withDisposition(wrapMedia(upstream, contentType, 'upstream-plain'), download, await filenameFor(raw), extHint)
   }
 
   // Non-range cache miss — cache regardless of size. Large bodies stream
@@ -119,7 +126,7 @@ export async function proxyService (request, ctx) {
   // the R2 put can retry. Either way it's best-effort and never blocks.
   const cl = Number(upstream.headers.get('content-length') || 0)
   if (cl > BUFFER_CAP) {
-    return withDisposition(teeIntoCache(bucket, ctx, key, upstream, contentType), download, platform, id, kind, ext)
+    return withDisposition(teeIntoCache(bucket, ctx, key, upstream, contentType), download, await filenameFor(raw), extHint)
   }
 
   const buf = await upstream.arrayBuffer()
@@ -134,22 +141,17 @@ export async function proxyService (request, ctx) {
     'cache-control': 'public, max-age=300',
     'x-cache-source': 'upstream-buffer'
   })
-  return withDisposition(new Response(buf, { status: 200, headers: out }), download, platform, id, kind, ext)
-}
-
-// Start byte of a Range header (0 if absent/unparseable).
-function rangeStartOf (header) {
-  const m = String(header || '').match(/bytes=(\d+)-/)
-  return m ? Number(m[1]) : 0
+  return withDisposition(new Response(buf, { status: 200, headers: out }), download, await filenameFor(raw), extHint)
 }
 
 // Heuristic: does this response look like real media (vs an expired-link
 // error page / JSON / tiny body)? For range hits we skip the size check
 // (the body is just a slice).
-function looksLikeMedia (resp, kind, isRange) {
+function looksLikeMedia (resp, kind, isRange, usedUrl) {
   if (!resp.ok || !resp.body) return false
   const ct = (resp.headers.get('content-type') || '').toLowerCase()
   if (ct.includes('text/html') || ct.includes('application/json') || ct.includes('text/xml') || ct.includes('text/plain')) return false
+  if (kind === 'nwm' && isWatermarkUrl(resp.url || usedUrl || '')) return false
   if (!isRange) {
     const len = Number(resp.headers.get('content-length') || 0)
     if (len && len < minSizeForKind(kind)) return false
@@ -168,10 +170,34 @@ function wrapMedia (upstream, contentType, source) {
   return new Response(upstream.body, { status: upstream.status, headers: out })
 }
 
-function withDisposition (resp, download, platform, id, kind, ext) {
+async function resolveDownloadName (bucket, platform, id, kind, raw, ext) {
+  let author = ''
+  let desc = ''
+  let detail = raw
+  if (!detail && bucket) {
+    try {
+      const cached = await getJson(bucket, metaKey(platform, id), 0)
+      detail = cached?.aweme_detail || (platform === 'tiktok' ? cached : null)
+    } catch {}
+  }
+  if (detail) {
+    try {
+      const min = toMinimal(platform, id, detail)
+      author = min.author?.nickname || ''
+      desc = min.desc || ''
+    } catch {
+      author = detail.author?.nickname || ''
+      desc = detail.desc || ''
+    }
+  }
+  const e = ext || (kind === 'cover' || String(kind).startsWith('image') ? 'jpeg' : 'mp4')
+  return downloadFilename({ author, desc, id, ext: e })
+}
+
+function withDisposition (resp, download, filename, ext) {
   if (!download) return resp
   const headers = new Headers(resp.headers)
-  const e = ext || (kind === 'cover' || kind.startsWith('image') ? 'jpeg' : 'mp4')
-  headers.set('content-disposition', `attachment; filename="${platform}_${id}_${kind}.${e}"`)
+  const name = filename || `download.${ext || 'mp4'}`
+  headers.set('content-disposition', contentDispositionAttachment(name))
   return new Response(resp.body, { status: resp.status, headers })
 }

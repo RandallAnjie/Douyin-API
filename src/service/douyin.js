@@ -2,7 +2,7 @@
 // data endpoint; the generate_*/get_* utilities are open.
 import { HTTPException } from '../utils/http-exception.js'
 import { jsonResponse } from '../utils/respond.js'
-import { requireAuth } from '../utils/auth.js'
+import { requireAuth, wantsDebug } from '../utils/auth.js'
 import * as crawler from '../douyin/crawler.js'
 import {
   getAwemeId, getSecUserId, getWebcastId, extractValidUrl
@@ -32,7 +32,14 @@ export default async function douyinWebService (route, request, ctx) {
     const awemeId = requireQ(request, 'aweme_id')
     requireAuth(request, ctx, PLATFORM, route, awemeId)
     const { data, cached } = await fetchDouyinDetailCached(ctx, awemeId, truthy(q(request, 'refresh')))
-    return jsonResponse(data, { router: route, params: { aweme_id: awemeId }, headers: { 'x-cache': cached ? 'hit' : 'miss' } })
+    const debug = wantsDebug(request, ctx)
+    const payload = { ...data }
+    if (!debug) delete payload.signed_error
+    const params = { aweme_id: awemeId, source: data?.source || null }
+    if (debug) params.signed_error = data?.signed_error || null
+    const headers = { 'x-cache': cached ? 'hit' : 'miss' }
+    if (data?.source) headers['x-aweme-source'] = data.source
+    return jsonResponse(payload, { router: route, params, headers })
   }
   if (method === 'GET' && route === 'fetch_user_post_videos') {
     const secUserId = requireQ(request, 'sec_user_id')

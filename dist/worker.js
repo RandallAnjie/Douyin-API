@@ -271,7 +271,18 @@ function requireProxyAuth(request, ctx, platform, id) {
   }
   throw new HTTPException(401, { message: "proxy: bad or expired auth" });
 }
-function requireAuth2(request, ctx, platform, route, primaryId = "") {
+function isMasterToken(request, ctx) {
+  const url = new URL(request.url);
+  const token = url.searchParams.get("token") || "";
+  return Boolean(token) && token === ctx.config.auth.token;
+}
+function wantsDebug(request, ctx) {
+  const url = new URL(request.url);
+  const v = String(url.searchParams.get("debug") || "").toLowerCase();
+  if (!["1", "true", "yes", "on"].includes(v)) return false;
+  return isMasterToken(request, ctx);
+}
+function requireAuth(request, ctx, platform, route, primaryId = "") {
   if (isAuthorised(request, ctx, platform, route, primaryId)) return;
   const url = new URL(request.url);
   const sent = url.searchParams.get("auth") || url.searchParams.get("token") || "(none)";
@@ -822,16 +833,21 @@ function extractMsToken(cookieStr) {
 function extractVerifyFp(cookieStr) {
   return cookieGet(parseCookie(cookieStr), ["s_v_web_id"]);
 }
+function extractWebid(cookieStr) {
+  return cookieGet(parseCookie(cookieStr), ["webid", "WEBID"]);
+}
 function sessionFromCookie(cookieStr) {
   return {
     uifid: extractUifid(cookieStr),
     msToken: extractMsToken(cookieStr),
-    verifyFp: extractVerifyFp(cookieStr)
+    verifyFp: extractVerifyFp(cookieStr),
+    webid: extractWebid(cookieStr)
   };
 }
 function baseRequestParams(msToken = "", opts = {}) {
   const uifid = opts.uifid ?? "";
   const verifyFp = opts.verifyFp ?? "";
+  const webid = opts.webid ?? "";
   const params = {
     device_platform: "webapp",
     aid: "6383",
@@ -865,9 +881,10 @@ function baseRequestParams(msToken = "", opts = {}) {
     show_live_replay_strategy: "1",
     time_list_query: "0",
     whale_cut_token: "",
-    update_version_code: "170400",
-    uifid
+    update_version_code: "170400"
   };
+  if (webid) params.webid = webid;
+  params.uifid = uifid;
   if (verifyFp) {
     params.verifyFp = verifyFp;
     params.fp = verifyFp;
@@ -1046,23 +1063,51 @@ var DOUYIN_REFERER = "https://www.douyin.com/";
 function cookieOf(ctx) {
   return ctx?.config?.douyin?.cookie || "";
 }
-function buildDouyinWebParams(ctx, extra = {}) {
+var cachedRealMs = { value: "", at: 0 };
+var inflightRealMs = null;
+var REAL_MS_TTL_MS = 10 * 60 * 1e3;
+async function realMsTokenCached() {
+  const now = Date.now();
+  if (cachedRealMs.value && now - cachedRealMs.at < REAL_MS_TTL_MS) return cachedRealMs.value;
+  if (!inflightRealMs) {
+    inflightRealMs = genRealMsToken().then((v) => {
+      cachedRealMs = { value: v, at: Date.now() };
+      return v;
+    }).finally(() => {
+      inflightRealMs = null;
+    });
+  }
+  return inflightRealMs;
+}
+async function resolveMsToken(ctx) {
   const session = sessionFromCookie(cookieOf(ctx));
-  const msToken = session.msToken || genFalseMsToken();
+  if (session.msToken) return session.msToken;
+  return realMsTokenCached();
+}
+async function buildDouyinWebParams(ctx, extra = {}) {
+  const session = sessionFromCookie(cookieOf(ctx));
+  const msToken = session.msToken || await resolveMsToken(ctx);
   return {
-    ...baseRequestParams(msToken, { uifid: session.uifid, verifyFp: session.verifyFp }),
+    ...baseRequestParams(msToken, { uifid: session.uifid, verifyFp: session.verifyFp, webid: session.webid }),
     ...extra
   };
 }
-async function douyinHeaders(ctx) {
+async function douyinHeaders(ctx, msToken) {
   let cookie = cookieOf(ctx);
   if (!cookie) {
     const ttwid = await genTtwid();
     if (ttwid) cookie = `ttwid=${ttwid}`;
   }
-  const extra = {};
-  const uifid = sessionFromCookie(cookie).uifid;
-  if (uifid) extra.uifid = uifid;
+  const session = sessionFromCookie(cookie);
+  if (msToken && !session.msToken) {
+    cookie = cookie ? `${cookie}; msToken=${msToken}` : `msToken=${msToken}`;
+  }
+  const extra = {
+    // MediaCrawler: Argus currently accepts a placeholder x-tt-argus;
+    // missing it can surface as Signature Not Found after uifid is set.
+    "x-tt-argus": "1"
+  };
+  if (session.uifid) extra.uifid = session.uifid;
   return buildHeaders({
     userAgent: ctx.config.douyin.userAgent,
     referer: DOUYIN_REFERER,
@@ -1081,10 +1126,19 @@ function signedABogusUrl(baseUrl, params) {
 }
 async function aBogusGet(ctx, baseUrl, params) {
   const { url } = signedABogusUrl(baseUrl, params);
-  return fetchGetJson(url, await douyinHeaders(ctx));
+  return fetchGetJson(url, await douyinHeaders(ctx, params.msToken));
+}
+function signedFailReason(data, err) {
+  if (err?.message) return redactUpstreamUrl(err.message);
+  if (!data) return "signed endpoint returned nothing";
+  const code = data.status_code;
+  const msg = data.status_msg || data.filter_detail?.filter_reason || "";
+  return redactUpstreamUrl(
+    `signed endpoint status_code=${code == null ? "n/a" : code}` + (msg ? ` ${msg}` : "") + " (no aweme_detail)"
+  );
 }
 async function fetchOneVideo(ctx, awemeId) {
-  const params = buildDouyinWebParams(ctx, { aweme_id: awemeId });
+  const params = await buildDouyinWebParams(ctx, { aweme_id: awemeId });
   let data = null;
   let primaryErr = null;
   try {
@@ -1092,20 +1146,33 @@ async function fetchOneVideo(ctx, awemeId) {
   } catch (err) {
     primaryErr = err;
   }
-  if (data && data.aweme_detail) return data;
+  if (data && data.aweme_detail) return { ...data, source: "signed" };
+  const signedError = signedFailReason(data, primaryErr);
+  try {
+    console.error("[douyin] signed detail failed, trying share fallback", signedError);
+  } catch {
+  }
   const share = await fetchShareDetail(ctx, awemeId);
   if (share.aweme_detail) {
     return {
       ...data,
       aweme_detail: share.aweme_detail,
-      filter_detail: share.filter_detail || data?.filter_detail || null
+      filter_detail: share.filter_detail || data?.filter_detail || null,
+      source: "share",
+      signed_error: signedError
     };
   }
   if (share.filter_detail && !data?.filter_detail) {
-    return { ...data, aweme_detail: data?.aweme_detail || null, filter_detail: share.filter_detail };
+    return {
+      ...data,
+      aweme_detail: data?.aweme_detail || null,
+      filter_detail: share.filter_detail,
+      source: "share",
+      signed_error: signedError
+    };
   }
   if (primaryErr) throw primaryErr;
-  return data;
+  return { ...data, source: "share", signed_error: signedError };
 }
 var SHARE_MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1";
 async function fetchShareDetail(ctx, awemeId) {
@@ -1138,16 +1205,16 @@ async function fetchShareDetail(ctx, awemeId) {
     filter_detail: res && res.filter_list && res.filter_list[0] || null
   };
 }
-function fetchUserPostVideos(ctx, secUserId, maxCursor, count) {
-  const params = buildDouyinWebParams(ctx, {
+async function fetchUserPostVideos(ctx, secUserId, maxCursor, count) {
+  const params = await buildDouyinWebParams(ctx, {
     max_cursor: String(maxCursor),
     count: String(count),
     sec_user_id: secUserId
   });
   return aBogusGet(ctx, DouyinEndpoints.USER_POST, params);
 }
-function fetchUserLikeVideos(ctx, secUserId, maxCursor, count) {
-  const params = buildDouyinWebParams(ctx, {
+async function fetchUserLikeVideos(ctx, secUserId, maxCursor, count) {
+  const params = await buildDouyinWebParams(ctx, {
     max_cursor: String(maxCursor),
     count: String(count),
     sec_user_id: secUserId
@@ -1158,22 +1225,22 @@ async function xBogusGet(ctx, baseUrl, params) {
   const paramStr = rawJoin(params);
   const { xBogus } = getXBogus(paramStr, ctx.config.douyin.userAgent);
   const url = `${baseUrl}?${paramStr}&X-Bogus=${xBogus}`;
-  return fetchGetJson(url, await douyinHeaders(ctx));
+  return fetchGetJson(url, await douyinHeaders(ctx, params.msToken));
 }
-function handlerUserProfile(ctx, secUserId) {
-  const params = buildDouyinWebParams(ctx, { sec_user_id: secUserId });
+async function handlerUserProfile(ctx, secUserId) {
+  const params = await buildDouyinWebParams(ctx, { sec_user_id: secUserId });
   return xBogusGet(ctx, DouyinEndpoints.USER_DETAIL, params);
 }
-function fetchUserMixVideos(ctx, mixId, cursor, count) {
-  const params = buildDouyinWebParams(ctx, {
+async function fetchUserMixVideos(ctx, mixId, cursor, count) {
+  const params = await buildDouyinWebParams(ctx, {
     cursor: String(cursor),
     count: String(count),
     mix_id: mixId
   });
   return xBogusGet(ctx, DouyinEndpoints.MIX_AWEME, params);
 }
-function fetchVideoComments(ctx, awemeId, cursor, count) {
-  const params = buildDouyinWebParams(ctx, {
+async function fetchVideoComments(ctx, awemeId, cursor, count) {
+  const params = await buildDouyinWebParams(ctx, {
     aweme_id: awemeId,
     cursor: String(cursor),
     count: String(count),
@@ -1185,8 +1252,8 @@ function fetchVideoComments(ctx, awemeId, cursor, count) {
   });
   return xBogusGet(ctx, DouyinEndpoints.POST_COMMENT, params);
 }
-function fetchVideoCommentReplies(ctx, itemId, commentId, cursor, count) {
-  const params = buildDouyinWebParams(ctx, {
+async function fetchVideoCommentReplies(ctx, itemId, commentId, cursor, count) {
+  const params = await buildDouyinWebParams(ctx, {
     item_id: itemId,
     comment_id: commentId,
     cursor: String(cursor),
@@ -1203,8 +1270,8 @@ function fetchUserLiveVideosByRoomId(ctx, roomId) {
   const params = { ...baseLive2Params(genVerifyFp(), genFalseMsToken()), room_id: roomId };
   return xBogusGet(ctx, DouyinEndpoints.LIVE_INFO_ROOM_ID, params);
 }
-function fetchLiveGiftRanking(ctx, roomId, rankType) {
-  const params = buildDouyinWebParams(ctx, {
+async function fetchLiveGiftRanking(ctx, roomId, rankType) {
+  const params = await buildDouyinWebParams(ctx, {
     webcast_sdk_version: "2450",
     room_id: String(roomId),
     rank_type: String(rankType)
@@ -1310,8 +1377,9 @@ async function getTiktokUniqueId(rawUrl) {
 }
 
 // src/utils/r2cache.js
-var mediaKey = (platform, id, kind) => `media/${platform}/${encodeURIComponent(String(id))}/${kind}`;
-var metaKey = (platform, id) => `meta/${platform}/${encodeURIComponent(String(id))}.json`;
+var CACHE_VERSION = "v2";
+var mediaKey = (platform, id, kind) => `media/${CACHE_VERSION}/${platform}/${encodeURIComponent(String(id))}/${kind}`;
+var metaKey = (platform, id) => `meta/${CACHE_VERSION}/${platform}/${encodeURIComponent(String(id))}.json`;
 function parseRangeHeader(header, totalSize) {
   if (!header) return null;
   const m = String(header).trim().match(/^bytes=(\d+)-(\d*)$/i);
@@ -1625,46 +1693,53 @@ async function douyinWebService(route, request, ctx) {
   const method = request.method;
   if (method === "GET" && route === "fetch_one_video") {
     const awemeId = requireQ(request, "aweme_id");
-    requireAuth2(request, ctx, PLATFORM, route, awemeId);
+    requireAuth(request, ctx, PLATFORM, route, awemeId);
     const { data, cached } = await fetchDouyinDetailCached(ctx, awemeId, truthy(q(request, "refresh")));
-    return jsonResponse(data, { router: route, params: { aweme_id: awemeId }, headers: { "x-cache": cached ? "hit" : "miss" } });
+    const debug = wantsDebug(request, ctx);
+    const payload = { ...data };
+    if (!debug) delete payload.signed_error;
+    const params = { aweme_id: awemeId, source: data?.source || null };
+    if (debug) params.signed_error = data?.signed_error || null;
+    const headers2 = { "x-cache": cached ? "hit" : "miss" };
+    if (data?.source) headers2["x-aweme-source"] = data.source;
+    return jsonResponse(payload, { router: route, params, headers: headers2 });
   }
   if (method === "GET" && route === "fetch_user_post_videos") {
     const secUserId = requireQ(request, "sec_user_id");
-    requireAuth2(request, ctx, PLATFORM, route, secUserId);
+    requireAuth(request, ctx, PLATFORM, route, secUserId);
     const maxCursor = q(request, "max_cursor", "0");
     const count = q(request, "count", "20");
     return jsonResponse(await fetchUserPostVideos(ctx, secUserId, maxCursor, count), { router: route });
   }
   if (method === "GET" && route === "fetch_user_like_videos") {
     const secUserId = requireQ(request, "sec_user_id");
-    requireAuth2(request, ctx, PLATFORM, route, secUserId);
+    requireAuth(request, ctx, PLATFORM, route, secUserId);
     const maxCursor = q(request, "max_cursor", "0");
     const count = q(request, "counts", q(request, "count", "20"));
     return jsonResponse(await fetchUserLikeVideos(ctx, secUserId, maxCursor, count), { router: route });
   }
   if (method === "GET" && route === "fetch_user_mix_videos") {
     const mixId = requireQ(request, "mix_id");
-    requireAuth2(request, ctx, PLATFORM, route, mixId);
+    requireAuth(request, ctx, PLATFORM, route, mixId);
     const cursor = q(request, "max_cursor", q(request, "cursor", "0"));
     const count = q(request, "counts", q(request, "count", "20"));
     return jsonResponse(await fetchUserMixVideos(ctx, mixId, cursor, count), { router: route });
   }
   if (method === "GET" && route === "handler_user_profile") {
     const secUserId = requireQ(request, "sec_user_id");
-    requireAuth2(request, ctx, PLATFORM, route, secUserId);
+    requireAuth(request, ctx, PLATFORM, route, secUserId);
     return jsonResponse(await handlerUserProfile(ctx, secUserId), { router: route });
   }
   if (method === "GET" && route === "fetch_video_comments") {
     const awemeId = requireQ(request, "aweme_id");
-    requireAuth2(request, ctx, PLATFORM, route, awemeId);
+    requireAuth(request, ctx, PLATFORM, route, awemeId);
     const cursor = q(request, "cursor", "0");
     const count = q(request, "count", "20");
     return jsonResponse(await fetchVideoComments(ctx, awemeId, cursor, count), { router: route });
   }
   if (method === "GET" && route === "fetch_video_comment_replies") {
     const itemId = requireQ(request, "item_id");
-    requireAuth2(request, ctx, PLATFORM, route, itemId);
+    requireAuth(request, ctx, PLATFORM, route, itemId);
     const commentId = requireQ(request, "comment_id");
     const cursor = q(request, "cursor", "0");
     const count = q(request, "count", "20");
@@ -1672,17 +1747,17 @@ async function douyinWebService(route, request, ctx) {
   }
   if (method === "GET" && route === "fetch_user_live_videos") {
     const webcastId = requireQ(request, "webcast_id");
-    requireAuth2(request, ctx, PLATFORM, route, webcastId);
+    requireAuth(request, ctx, PLATFORM, route, webcastId);
     return jsonResponse(await fetchUserLiveVideos(ctx, webcastId), { router: route });
   }
   if (method === "GET" && route === "fetch_user_live_videos_by_room_id") {
     const roomId = requireQ(request, "room_id");
-    requireAuth2(request, ctx, PLATFORM, route, roomId);
+    requireAuth(request, ctx, PLATFORM, route, roomId);
     return jsonResponse(await fetchUserLiveVideosByRoomId(ctx, roomId), { router: route });
   }
   if (method === "GET" && route === "fetch_live_gift_ranking") {
     const roomId = requireQ(request, "room_id");
-    requireAuth2(request, ctx, PLATFORM, route, roomId);
+    requireAuth(request, ctx, PLATFORM, route, roomId);
     const rankType = q(request, "rank_type", "30");
     return jsonResponse(await fetchLiveGiftRanking(ctx, roomId, rankType), { router: route });
   }
@@ -1976,54 +2051,54 @@ async function tiktokWebService(route, request, ctx) {
   const method = request.method;
   if (method === "GET" && route === "fetch_one_video") {
     const itemId = requireQ2(request, "itemId");
-    requireAuth2(request, ctx, PLATFORM2, route, itemId);
+    requireAuth(request, ctx, PLATFORM2, route, itemId);
     return jsonResponse(await fetchOneVideo3(ctx, itemId), { router: route });
   }
   if (method === "GET" && route === "fetch_user_profile") {
     const secUid = q2(request, "secUid", "");
     const uniqueId = q2(request, "uniqueId", "");
     if (!secUid && !uniqueId) throw new HTTPException(400, { message: "Provide secUid or uniqueId" });
-    requireAuth2(request, ctx, PLATFORM2, route, secUid || uniqueId);
+    requireAuth(request, ctx, PLATFORM2, route, secUid || uniqueId);
     return jsonResponse(await fetchUserProfile(ctx, secUid, uniqueId), { router: route });
   }
   if (method === "GET" && route === "fetch_user_post") {
     const secUid = requireQ2(request, "secUid");
-    requireAuth2(request, ctx, PLATFORM2, route, secUid);
+    requireAuth(request, ctx, PLATFORM2, route, secUid);
     return jsonResponse(await fetchUserPost(ctx, secUid, q2(request, "cursor", "0"), q2(request, "count", "35"), q2(request, "coverFormat", "2")), { router: route });
   }
   if (method === "GET" && route === "fetch_user_like") {
     const secUid = requireQ2(request, "secUid");
-    requireAuth2(request, ctx, PLATFORM2, route, secUid);
+    requireAuth(request, ctx, PLATFORM2, route, secUid);
     return jsonResponse(await fetchUserLike(ctx, secUid, q2(request, "cursor", "0"), q2(request, "count", "35"), q2(request, "coverFormat", "2")), { router: route });
   }
   if (method === "GET" && route === "fetch_user_mix") {
     const mixId = requireQ2(request, "mixId");
-    requireAuth2(request, ctx, PLATFORM2, route, mixId);
+    requireAuth(request, ctx, PLATFORM2, route, mixId);
     return jsonResponse(await fetchUserMix(ctx, mixId, q2(request, "cursor", "0"), q2(request, "count", "30")), { router: route });
   }
   if (method === "GET" && route === "fetch_user_play_list") {
     const secUid = requireQ2(request, "secUid");
-    requireAuth2(request, ctx, PLATFORM2, route, secUid);
+    requireAuth(request, ctx, PLATFORM2, route, secUid);
     return jsonResponse(await fetchUserPlayList(ctx, secUid, q2(request, "cursor", "0"), q2(request, "count", "30")), { router: route });
   }
   if (method === "GET" && route === "fetch_post_comment") {
     const awemeId = requireQ2(request, "aweme_id");
-    requireAuth2(request, ctx, PLATFORM2, route, awemeId);
+    requireAuth(request, ctx, PLATFORM2, route, awemeId);
     return jsonResponse(await fetchPostComment(ctx, awemeId, q2(request, "cursor", "0"), q2(request, "count", "20"), q2(request, "current_region", "")), { router: route });
   }
   if (method === "GET" && route === "fetch_post_comment_reply") {
     const itemId = requireQ2(request, "item_id");
-    requireAuth2(request, ctx, PLATFORM2, route, itemId);
+    requireAuth(request, ctx, PLATFORM2, route, itemId);
     return jsonResponse(await fetchPostCommentReply(ctx, itemId, requireQ2(request, "comment_id"), q2(request, "cursor", "0"), q2(request, "count", "20"), q2(request, "current_region", "")), { router: route });
   }
   if (method === "GET" && route === "fetch_user_fans") {
     const secUid = requireQ2(request, "secUid");
-    requireAuth2(request, ctx, PLATFORM2, route, secUid);
+    requireAuth(request, ctx, PLATFORM2, route, secUid);
     return jsonResponse(await fetchUserFans(ctx, secUid, q2(request, "count", "30"), q2(request, "maxCursor", "0"), q2(request, "minCursor", "0")), { router: route });
   }
   if (method === "GET" && route === "fetch_user_follow") {
     const secUid = requireQ2(request, "secUid");
-    requireAuth2(request, ctx, PLATFORM2, route, secUid);
+    requireAuth(request, ctx, PLATFORM2, route, secUid);
     return jsonResponse(await fetchUserFollow(ctx, secUid, q2(request, "count", "30"), q2(request, "maxCursor", "0"), q2(request, "minCursor", "0")), { router: route });
   }
   if (method === "GET" && route === "generate_real_msToken") {
@@ -2061,7 +2136,7 @@ async function tiktokWebService(route, request, ctx) {
 async function tiktokAppService(route, request, ctx) {
   if (request.method === "GET" && route === "fetch_one_video") {
     const awemeId = requireQ2(request, "aweme_id");
-    requireAuth2(request, ctx, PLATFORM2, "app_fetch_one_video", awemeId);
+    requireAuth(request, ctx, PLATFORM2, "app_fetch_one_video", awemeId);
     const refresh = ["1", "true", "yes", "on"].includes(String(q2(request, "refresh")).toLowerCase());
     const { data, cached } = await fetchTiktokAwemeCached(ctx, awemeId, refresh);
     return jsonResponse(data, { router: `app/${route}`, headers: { "x-cache": cached ? "hit" : "miss" } });
@@ -2079,6 +2154,139 @@ async function mapUrls2(request, fn) {
   if (!urls) throw new HTTPException(400, { message: "Body must be a JSON array of urls" });
   const valid = urls.map(extractValidUrl).filter(Boolean);
   return Promise.all(valid.map((u) => fn(u)));
+}
+
+// src/utils/media.js
+var RATIO_NUM = (v) => {
+  const m = String(v || "").match(/(\d{3,4})/);
+  return m ? Number(m[1]) : 0;
+};
+function isWatermarkUrl(url) {
+  if (typeof url !== "string" || !url) return false;
+  try {
+    const u = new URL(url.replace(/^http:/i, "https:"));
+    if (/\/playwm(?:\/|$)/i.test(u.pathname)) return true;
+    const logo = u.searchParams.get("logo_type");
+    if (logo != null && logo !== "" && logo !== "0") return true;
+    if (u.searchParams.get("watermark") === "1") return true;
+    if (u.searchParams.get("with_watermark") === "1") return true;
+  } catch {
+    return /\/playwm(?:\/|\?|$)/i.test(url) || /[?&]logo_type=/i.test(url);
+  }
+  return false;
+}
+function toPlayUrl(url, ratio = "1080p") {
+  if (typeof url !== "string" || !url) return url;
+  let u;
+  try {
+    u = new URL(url.replace(/^http:/i, "https:"));
+  } catch {
+    return url.replace(/playwm/gi, "play");
+  }
+  u.pathname = u.pathname.replace(/\/playwm(?=\/|$)/gi, "/play");
+  u.searchParams.delete("logo_type");
+  u.searchParams.delete("logo_name");
+  u.searchParams.delete("watermark");
+  u.searchParams.delete("with_watermark");
+  if (/\/play(?:wm)?(?:\/|$)/i.test(u.pathname)) {
+    const radio = u.searchParams.get("radio");
+    if (radio && !u.searchParams.get("ratio")) u.searchParams.set("ratio", radio);
+    u.searchParams.delete("radio");
+    const want = RATIO_NUM(ratio);
+    const have = RATIO_NUM(u.searchParams.get("ratio"));
+    if (want && want > have) u.searchParams.set("ratio", ratio);
+  }
+  return u.toString();
+}
+function playUrlFromUri(uri, ratio = "1080p", host = "aweme.snssdk.com") {
+  if (!uri) return null;
+  return `https://${host}/aweme/v1/play/?video_id=${uri}&ratio=${ratio}&line=0`;
+}
+function playAddrOf(entry) {
+  return entry?.play_addr || entry || {};
+}
+function bitRateQuality(entry) {
+  const pa = playAddrOf(entry);
+  const w = Number(pa.width || entry?.width) || 0;
+  const h = Number(pa.height || entry?.height) || 0;
+  return {
+    pixels: w * h,
+    width: w,
+    height: h,
+    size: Number(entry?.data_size || pa.data_size) || 0,
+    br: Number(entry?.bit_rate || entry?.bitrate) || 0,
+    ratio: RATIO_NUM(entry?.gear_name || entry?.quality_type || pa.url_key)
+  };
+}
+function compareBitRate(a, b) {
+  const qa = bitRateQuality(a);
+  const qb = bitRateQuality(b);
+  if (qb.pixels !== qa.pixels) return qb.pixels - qa.pixels;
+  if (qb.size !== qa.size) return qb.size - qa.size;
+  if (qb.br !== qa.br) return qb.br - qa.br;
+  return qb.ratio - qa.ratio;
+}
+function sortedBitRates(video) {
+  const list = Array.isArray(video?.bit_rate) ? video.bit_rate.filter(Boolean) : [];
+  return [...list].sort(compareBitRate);
+}
+function videoDimensions(video) {
+  const w0 = Number(video?.width) || 0;
+  const h0 = Number(video?.height) || 0;
+  if (w0 > 0 && h0 > 0) return { width: w0, height: h0 };
+  const pa = video?.play_addr || {};
+  const w1 = Number(pa.width) || 0;
+  const h1 = Number(pa.height) || 0;
+  if (w1 > 0 && h1 > 0) return { width: w1, height: h1 };
+  const best = sortedBitRates(video)[0];
+  const w2 = Number(best?.play_addr?.width) || 0;
+  const h2 = Number(best?.play_addr?.height) || 0;
+  if (w2 > 0 && h2 > 0) return { width: w2, height: h2 };
+  return { width: 0, height: 0 };
+}
+function pushNwm(out, url) {
+  if (typeof url !== "string" || !url) return;
+  const n = toPlayUrl(url);
+  if (!n || isWatermarkUrl(n)) return;
+  out.push(n.replace(/^http:/i, "https:"));
+}
+function nwmCandidates(video) {
+  const out = [];
+  const rates = sortedBitRates(video);
+  for (const b of rates) {
+    const list5 = b?.play_addr?.url_list;
+    if (Array.isArray(list5)) for (const u of list5) pushNwm(out, u);
+  }
+  const uri = video?.play_addr?.uri || video?.download_addr?.uri || rates[0]?.play_addr?.uri || "";
+  if (uri) {
+    pushNwm(out, playUrlFromUri(uri, "1080p"));
+    pushNwm(out, playUrlFromUri(uri, "720p"));
+    pushNwm(out, playUrlFromUri(uri, "1080p", "www.iesdouyin.com"));
+  }
+  const list = video?.play_addr?.url_list;
+  if (Array.isArray(list)) for (const u of list) pushNwm(out, u);
+  return [...new Set(out)];
+}
+function downloadFilename({ author = "", desc = "", id = "", ext = "mp4" } = {}) {
+  const stripCtrl = (s) => {
+    let out = "";
+    for (const ch of s) {
+      const c = ch.codePointAt(0);
+      if (c >= 32 && c !== 127) out += ch;
+    }
+    return out;
+  };
+  const clean = (s, max) => stripCtrl(String(s || "")).replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().replace(/[. ]+$/g, "").slice(0, max);
+  const a = clean(author, 32) || "unknown";
+  const d = clean(desc, 40) || "video";
+  const ident = String(id || "").replace(/[^\w.-]/g, "").slice(0, 24) || "id";
+  const e = String(ext || "mp4").replace(/[^\w]/g, "") || "mp4";
+  return `${a}-${d}-${ident}.${e}`;
+}
+function contentDispositionAttachment(filename) {
+  const safe = String(filename || "download").replace(/[\r\n"]/g, "_");
+  const ascii = safe.replace(/[^\x20-\x7E]/g, "_") || "download";
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(safe)}`;
 }
 
 // src/hybrid/crawler.js
@@ -2124,15 +2332,52 @@ async function fetchRawById(ctx, platform, id, refresh = false) {
       }
       throw new HTTPException(502, { message: "Douyin returned no aweme_detail (bad cookie/signature?)" });
     }
-    return { raw, cached };
+    return {
+      raw,
+      cached,
+      source: data.source || "signed",
+      signed_error: data.signed_error || null
+    };
   }
   if (platform === "tiktok") {
     const { data, cached } = await fetchTiktokAwemeCached(ctx, id, refresh);
-    return { raw: data, cached };
+    return { raw: data, cached, source: "app", signed_error: null };
   }
   throw new HTTPException(400, { message: `Unknown platform: ${platform}` });
 }
-function toMinimal(platform, videoId, data) {
+function douyinVideoData(video) {
+  const uri = video?.play_addr?.uri || video?.download_addr?.uri || "";
+  const nwmList = nwmCandidates(video);
+  const nwmHQ = nwmList[0] || (uri ? playUrlFromUri(uri, "1080p") : null);
+  const nwm = (uri ? playUrlFromUri(uri, "1080p") : null) || nwmHQ;
+  const wmList = video?.download_addr?.url_list;
+  const wmHQ = Array.isArray(wmList) && wmList[0] || (Array.isArray(video?.play_addr?.url_list) ? video.play_addr.url_list[0] : null) || (uri ? `https://aweme.snssdk.com/aweme/v1/playwm/?video_id=${uri}&radio=1080p&line=0` : null);
+  const dim = videoDimensions(video);
+  return {
+    wm_video_url: uri ? `https://aweme.snssdk.com/aweme/v1/playwm/?video_id=${uri}&radio=1080p&line=0` : wmHQ,
+    wm_video_url_HQ: wmHQ,
+    nwm_video_url: nwm,
+    nwm_video_url_HQ: nwmHQ,
+    width: dim.width,
+    height: dim.height
+  };
+}
+function tiktokVideoData(video) {
+  const nwmList = nwmCandidates(video);
+  const play0 = video?.play_addr?.url_list?.[0] || null;
+  const nwmHQ = nwmList[0] || play0;
+  const wm = video?.download_addr?.url_list?.[0] ?? null;
+  const dim = videoDimensions(video);
+  return {
+    wm_video_url: wm,
+    wm_video_url_HQ: wm,
+    nwm_video_url: play0 || nwmHQ,
+    nwm_video_url_HQ: nwmHQ,
+    width: dim.width,
+    height: dim.height
+  };
+}
+function toMinimal(platform, videoId, data, meta = {}) {
   const type = URL_TYPE[data.aweme_type] || "video";
   const result = {
     type,
@@ -2148,22 +2393,16 @@ function toMinimal(platform, videoId, data) {
       origin_cover: data.video?.origin_cover,
       dynamic_cover: data.video?.dynamic_cover
     },
-    hashtags: data.text_extra
+    hashtags: data.text_extra,
+    source: meta.source || data.source || null
   };
   if (platform === "douyin") {
     if (type === "video") {
-      const uri = data.video.play_addr.uri;
-      const wmHQ = data.video.play_addr.url_list[0];
-      result.video_data = {
-        wm_video_url: `https://aweme.snssdk.com/aweme/v1/playwm/?video_id=${uri}&radio=1080p&line=0`,
-        wm_video_url_HQ: wmHQ,
-        nwm_video_url: `https://aweme.snssdk.com/aweme/v1/play/?video_id=${uri}&ratio=1080p&line=0`,
-        nwm_video_url_HQ: wmHQ.replace("playwm", "play")
-      };
+      result.video_data = douyinVideoData(data.video || {});
     } else {
       const nwm = [];
       const wm = [];
-      for (const i of data.images) {
+      for (const i of data.images || []) {
         nwm.push(i.url_list[0]);
         wm.push(i.download_url_list[0]);
       }
@@ -2171,17 +2410,11 @@ function toMinimal(platform, videoId, data) {
     }
   } else {
     if (type === "video") {
-      const wm = data.video?.download_addr?.url_list?.[0] ?? null;
-      result.video_data = {
-        wm_video_url: wm,
-        wm_video_url_HQ: wm,
-        nwm_video_url: data.video.play_addr.url_list[0],
-        nwm_video_url_HQ: data.video.bit_rate[0].play_addr.url_list[0]
-      };
+      result.video_data = tiktokVideoData(data.video || {});
     } else {
       const nwm = [];
       const wm = [];
-      for (const i of data.image_post_info.images) {
+      for (const i of data.image_post_info?.images || []) {
         nwm.push(i.display_image.url_list[0]);
         wm.push(i.owner_watermark_image.url_list[0]);
       }
@@ -2192,9 +2425,9 @@ function toMinimal(platform, videoId, data) {
 }
 async function hybridParseSingleVideo(ctx, url, minimal = false, refresh = false) {
   const { platform, id } = await resolvePlatformId(url);
-  const { raw } = await fetchRawById(ctx, platform, id, refresh);
+  const { raw, source } = await fetchRawById(ctx, platform, id, refresh);
   if (!minimal) return raw;
-  return toMinimal(platform, id, raw);
+  return toMinimal(platform, id, raw, { source });
 }
 function mediaCandidates(platform, raw, kind) {
   const out = [];
@@ -2205,10 +2438,7 @@ function mediaCandidates(platform, raw, kind) {
   };
   const video = raw.video || {};
   if (kind === "nwm") {
-    push(video.play_addr?.url_list);
-    if (Array.isArray(video.bit_rate)) for (const b of video.bit_rate) push(b?.play_addr?.url_list);
-    const uri = video.play_addr?.uri;
-    if (uri) out.push(`https://aweme.snssdk.com/aweme/v1/play/?video_id=${uri}&ratio=1080p&line=0`);
+    out.push(...nwmCandidates(video));
   } else if (kind === "wm") {
     push(video.download_addr?.url_list);
     push(video.play_addr?.url_list);
@@ -2231,7 +2461,9 @@ function mediaCandidates(platform, raw, kind) {
       push(wm ? im?.owner_watermark_image?.url_list : im?.display_image?.url_list);
     }
   }
-  return [...new Set(out.map((u) => u.replace(/^http:/, "https:")))];
+  const https = [...new Set(out.map((u) => String(u).replace(/^http:/, "https:")))];
+  if (kind === "nwm") return https.filter((u) => !isWatermarkUrl(u));
+  return https;
 }
 
 // src/utils/proxy-link.js
@@ -2660,8 +2892,9 @@ function warmMedia(ctx, platform, id, raw, min, warmVideo) {
   }
 }
 async function ingestWork(ctx, request, platform, id, target, refresh = false, opts = {}) {
-  const { raw, cached } = opts.raw ? { raw: opts.raw, cached: false } : await fetchRawById(ctx, platform, id, refresh);
-  const min = toMinimal(platform, id, raw);
+  const fetched = opts.raw ? { raw: opts.raw, cached: false, source: opts.source || null, signed_error: null } : await fetchRawById(ctx, platform, id, refresh);
+  const { raw, cached, source, signed_error } = fetched;
+  const min = toMinimal(platform, id, raw, { source });
   const a = min.author || {};
   const s = min.statistics || {};
   await logQuery(ctx, {
@@ -2692,11 +2925,14 @@ async function ingestWork(ctx, request, platform, id, target, refresh = false, o
     duration: raw.duration ? Math.round(raw.duration / 1e3) : null,
     extra: {
       stats: min.statistics || null,
-      images: min.type === "image" && min.image_data ? min.image_data.no_watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `image${i}`)) : void 0
+      images: min.type === "image" && min.image_data ? min.image_data.no_watermark_image_list.map((_, i) => proxyLink(request, ctx, platform, id, `image${i}`)) : void 0,
+      width: min.video_data?.width || null,
+      height: min.video_data?.height || null,
+      source: min.source || source || null
     }
   });
   warmMedia(ctx, platform, id, raw, min, opts.warmVideo !== false);
-  return { raw, min, cached };
+  return { raw, min, cached, source, signed_error };
 }
 
 // src/utils/comments.js
@@ -2782,11 +3018,16 @@ async function hybridService(route, request, ctx) {
     const refresh = guest ? false : truthy2(url.searchParams.get("refresh") ?? "false");
     const linkTtl = guest ? ctx.config.guest.linkTtlSec : void 0;
     const { platform, id } = await resolvePlatformId(target);
-    const { raw, min } = await ingestWork(ctx, request, platform, id, target, refresh);
+    const { raw, min, source, signed_error } = await ingestWork(ctx, request, platform, id, target, refresh);
     if (ctx.waitUntil) ctx.waitUntil(maybeFetchComments(ctx, platform, id));
+    const debug = wantsDebug(request, ctx);
     let data = minimal ? min : raw;
     if (minimal && proxy) data = rewriteMinimalToProxy(data, request, ctx, linkTtl);
-    return jsonResponse(data, { router: "hybrid/video_data", params: { url: target, minimal, proxy, guest } });
+    const params = { url: target, minimal, proxy, guest, source: source || min?.source || null };
+    if (debug) params.signed_error = signed_error || null;
+    const headers2 = {};
+    if (source) headers2["x-aweme-source"] = source;
+    return jsonResponse(data, { router: "hybrid/video_data", params, headers: headers2 });
   }
   if (request.method === "POST" && route === "update_cookie") {
     throw new HTTPException(501, {
@@ -2805,6 +3046,10 @@ async function downloadService(request, ctx) {
   let fileUrl, ext;
   if (data.type === "video") {
     fileUrl = withWatermark ? data.video_data.wm_video_url_HQ || data.video_data.wm_video_url : data.video_data.nwm_video_url_HQ || data.video_data.nwm_video_url;
+    if (!withWatermark && fileUrl) fileUrl = toPlayUrl(fileUrl);
+    if (!withWatermark && isWatermarkUrl(fileUrl)) {
+      throw new HTTPException(502, { message: "nwm resolved to a watermarked playwm URL" });
+    }
     ext = "mp4";
   } else {
     const list = withWatermark ? data.image_data.watermark_image_list : data.image_data.no_watermark_image_list;
@@ -2821,12 +3066,17 @@ async function downloadService(request, ctx) {
   if (!upstream.ok || !upstream.body) {
     throw new HTTPException(502, { message: `Failed to fetch media (${upstream.status})` });
   }
-  const filename = `${data.platform}_${data.video_id}.${ext}`;
+  const filename = downloadFilename({
+    author: data.author?.nickname,
+    desc: data.desc,
+    id: data.video_id,
+    ext
+  });
   const headers2 = new Headers();
   headers2.set("content-type", upstream.headers.get("content-type") || (ext === "mp4" ? "video/mp4" : "image/jpeg"));
   const len = upstream.headers.get("content-length");
   if (len) headers2.set("content-length", len);
-  headers2.set("content-disposition", `attachment; filename="${filename}"`);
+  headers2.set("content-disposition", contentDispositionAttachment(filename));
   return new Response(upstream.body, { status: 200, headers: headers2 });
 }
 
@@ -2849,13 +3099,17 @@ async function proxyService(request, ctx) {
   const download = ["1", "true", "yes"].includes(String(url.searchParams.get("download")).toLowerCase());
   const bucket = ctx.config.mediaR2;
   const key = mediaKey(platform, id, kind);
+  const extHint = kind === "nwm" || kind === "wm" ? "mp4" : "jpeg";
+  const filenameFor = async (raw2) => {
+    if (!download) return null;
+    return resolveDownloadName(bucket, platform, id, kind, raw2, extHint);
+  };
   if (bucket && !refresh) {
     const hit = await serveFromR2(bucket, request, key, void 0, minSizeForKind(kind));
-    if (hit) return withDisposition(hit, download, platform, id, kind);
+    if (hit) return withDisposition(hit, download, await filenameFor(null), extHint);
   }
   const isVideo = kind === "nwm" || kind === "wm";
   const contentType = isVideo ? "video/mp4" : "image/jpeg";
-  const ext = isVideo ? "mp4" : "jpeg";
   const reqHeaders = {
     "User-Agent": platform === "douyin" ? ctx.config.douyin.userAgent : ctx.config.tiktok.userAgent,
     Referer: REFERER[platform]
@@ -2863,13 +3117,14 @@ async function proxyService(request, ctx) {
   const rangeHeader = request.headers.get("range");
   const probe = async (cands) => {
     for (const u of cands) {
+      if (kind === "nwm" && isWatermarkUrl(u)) continue;
       let r;
       try {
         r = await fetch(u, { headers: rangeHeader ? { ...reqHeaders, range: rangeHeader } : reqHeaders });
       } catch {
         continue;
       }
-      if (looksLikeMedia(r, kind, !!rangeHeader)) return { upstream: r, usedUrl: u };
+      if (looksLikeMedia(r, kind, !!rangeHeader, u)) return { upstream: r, usedUrl: u };
       try {
         await r.body?.cancel();
       } catch {
@@ -2894,7 +3149,7 @@ async function proxyService(request, ctx) {
   const openFromZero = /^bytes=0-$/.test((rangeHeader || "").trim());
   if (rangeHeader && !openFromZero) {
     if (bucket) warmUrl(ctx, bucket, key, usedUrl, reqHeaders, contentType);
-    return withDisposition(wrapMedia(upstream, contentType, "upstream-range"), download, platform, id, kind, ext);
+    return withDisposition(wrapMedia(upstream, contentType, "upstream-range"), download, await filenameFor(raw), extHint);
   }
   if (openFromZero) {
     try {
@@ -2906,16 +3161,16 @@ async function proxyService(request, ctx) {
     } catch {
       upstream = null;
     }
-    if (!upstream || !looksLikeMedia(upstream, kind, false)) {
+    if (!upstream || !looksLikeMedia(upstream, kind, false, usedUrl)) {
       throw new HTTPException(502, { message: `re-fetch failed for kind=${kind}` });
     }
   }
   if (!bucket) {
-    return withDisposition(wrapMedia(upstream, contentType, "upstream-plain"), download, platform, id, kind, ext);
+    return withDisposition(wrapMedia(upstream, contentType, "upstream-plain"), download, await filenameFor(raw), extHint);
   }
   const cl = Number(upstream.headers.get("content-length") || 0);
   if (cl > BUFFER_CAP) {
-    return withDisposition(teeIntoCache(bucket, ctx, key, upstream, contentType), download, platform, id, kind, ext);
+    return withDisposition(teeIntoCache(bucket, ctx, key, upstream, contentType), download, await filenameFor(raw), extHint);
   }
   const buf = await upstream.arrayBuffer();
   const size = buf.byteLength;
@@ -2929,12 +3184,13 @@ async function proxyService(request, ctx) {
     "cache-control": "public, max-age=300",
     "x-cache-source": "upstream-buffer"
   });
-  return withDisposition(new Response(buf, { status: 200, headers: out }), download, platform, id, kind, ext);
+  return withDisposition(new Response(buf, { status: 200, headers: out }), download, await filenameFor(raw), extHint);
 }
-function looksLikeMedia(resp, kind, isRange) {
+function looksLikeMedia(resp, kind, isRange, usedUrl) {
   if (!resp.ok || !resp.body) return false;
   const ct = (resp.headers.get("content-type") || "").toLowerCase();
   if (ct.includes("text/html") || ct.includes("application/json") || ct.includes("text/xml") || ct.includes("text/plain")) return false;
+  if (kind === "nwm" && isWatermarkUrl(resp.url || usedUrl || "")) return false;
   if (!isRange) {
     const len = Number(resp.headers.get("content-length") || 0);
     if (len && len < minSizeForKind(kind)) return false;
@@ -2953,11 +3209,35 @@ function wrapMedia(upstream, contentType, source) {
   out.set("x-cache-source", source);
   return new Response(upstream.body, { status: upstream.status, headers: out });
 }
-function withDisposition(resp, download, platform, id, kind, ext) {
+async function resolveDownloadName(bucket, platform, id, kind, raw, ext) {
+  let author = "";
+  let desc = "";
+  let detail = raw;
+  if (!detail && bucket) {
+    try {
+      const cached = await getJson(bucket, metaKey(platform, id), 0);
+      detail = cached?.aweme_detail || (platform === "tiktok" ? cached : null);
+    } catch {
+    }
+  }
+  if (detail) {
+    try {
+      const min = toMinimal(platform, id, detail);
+      author = min.author?.nickname || "";
+      desc = min.desc || "";
+    } catch {
+      author = detail.author?.nickname || "";
+      desc = detail.desc || "";
+    }
+  }
+  const e = ext || (kind === "cover" || String(kind).startsWith("image") ? "jpeg" : "mp4");
+  return downloadFilename({ author, desc, id, ext: e });
+}
+function withDisposition(resp, download, filename, ext) {
   if (!download) return resp;
   const headers2 = new Headers(resp.headers);
-  const e = ext || (kind === "cover" || kind.startsWith("image") ? "jpeg" : "mp4");
-  headers2.set("content-disposition", `attachment; filename="${platform}_${id}_${kind}.${e}"`);
+  const name = filename || `download.${ext || "mp4"}`;
+  headers2.set("content-disposition", contentDispositionAttachment(name));
   return new Response(resp.body, { status: resp.status, headers: headers2 });
 }
 
@@ -3611,8 +3891,11 @@ body{margin:0;background:radial-gradient(1100px 560px at 50% -10%,#221f2c 0%,tra
 a.back{font-family:var(--mono);font-size:11px;color:var(--faint);text-decoration:none}
 a.back:hover{color:var(--teal)}
 .head{display:flex;gap:18px;margin:14px 0 0;flex-wrap:wrap}
-.frame{flex:0 0 200px;width:200px;aspect-ratio:3/4;border-radius:10px;overflow:hidden;background:#0e0d12;border:1px solid var(--line)}
-.frame img,.frame video{width:100%;height:100%;object-fit:cover;display:block}
+.frame{position:relative;flex:0 0 auto;width:min(240px,100%);max-height:min(72vh,640px);aspect-ratio:9/16;border-radius:10px;overflow:hidden;background:#0e0d12;border:1px solid var(--line)}
+.frame.is-h{width:min(520px,100%);max-height:min(52vh,420px)}
+.frame img,.frame video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
+.playhint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:42px;color:#fff;text-shadow:0 2px 12px #000;background:rgba(0,0,0,.18);pointer-events:none}
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:rgba(20,18,26,.92);color:var(--teal);font-family:var(--mono);font-size:12px;letter-spacing:.08em;padding:8px 14px;border-radius:8px;border:1px solid var(--line);z-index:80;pointer-events:none}
 .meta{flex:1;min-width:240px}
 .title{font-family:var(--serif);font-size:22px;line-height:1.3;margin:0}
 .author{display:flex;align-items:center;gap:10px;margin:12px 0}
@@ -3707,13 +3990,58 @@ svg{width:100%;height:220px;display:block}
       var d=await r.json();render(d)
     }catch(e){$('#app').innerHTML='<p class=status>\u52A0\u8F7D\u5931\u8D25\uFF1A'+e.message+'</p>'}
   }
+  function withFlag(href,flag){if(!href)return href;return href+(href.indexOf('?')>-1?'&':'?')+flag}
+  function toast(msg){
+    var t=el('div','toast',msg)
+    document.body.appendChild(t)
+    setTimeout(function(){if(t.parentNode)t.parentNode.removeChild(t)},1600)
+  }
+  function fallbackCopy(text,done){
+    var ta=document.createElement('textarea')
+    ta.value=text;ta.setAttribute('readonly','');ta.style.cssText='position:fixed;left:-9999px;top:0'
+    document.body.appendChild(ta);ta.select();ta.setSelectionRange(0,text.length)
+    var ok=false
+    try{ok=document.execCommand('copy')}catch(e){}
+    document.body.removeChild(ta)
+    if(ok)done()
+  }
+  function copyText(text,done){
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done,function(){fallbackCopy(text,done)})
+    }else fallbackCopy(text,done)
+  }
+  function applyAspect(frame,w,h){
+    w=Number(w)||0;h=Number(h)||0
+    if(!(w>0&&h>0))return
+    frame.style.aspectRatio=w+' / '+h
+    if(w>=h)frame.classList.add('is-h');else frame.classList.remove('is-h')
+  }
+  function clickToPlay(frame,cover,playUrl,w,h){
+    applyAspect(frame,w,h)
+    if(cover){var im=el('img');im.src=cover;im.alt='\u9884\u89C8';frame.appendChild(im)}
+    frame.appendChild(el('span','playhint','\u25B6'))
+    frame.style.cursor='pointer'
+    frame.addEventListener('click',function start(){
+      frame.removeEventListener('click',start)
+      frame.innerHTML=''
+      var v=document.createElement('video');v.controls=true;v.autoplay=true;v.preload='metadata'
+      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
+      if(cover)v.poster=cover
+      v.src=playUrl
+      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
+      frame.appendChild(v)
+      var p=v.play();if(p&&p.catch)p.catch(function(){})
+    })
+  }
   function render(d){
     var w=d.work||{},au=d.author||{},hist=d.history||[]
+    var extra=w.extra||{}
     var app=$('#app');app.innerHTML=''
     var head=el('div','head')
     var frame=el('div','frame')
-    if(w.play){var v=document.createElement('video');v.controls=true;v.setAttribute('playsinline','');v.preload='metadata';if(w.cover)v.poster=w.cover;v.src=w.play;frame.appendChild(v)}
-    else if(w.cover){var im=el('img');im.src=w.cover;frame.appendChild(im)}
+    var vw=extra.width,vh=extra.height
+    if(w.play){clickToPlay(frame,w.cover,w.play,vw,vh)}
+    else if(w.cover){var im=el('img');im.src=w.cover;im.addEventListener('load',function(){if(im.naturalWidth&&im.naturalHeight)applyAspect(frame,im.naturalWidth,im.naturalHeight)});frame.appendChild(im)}
     head.appendChild(frame)
     var meta=el('div','meta')
     meta.appendChild(el('div','title',w.description||'(\u65E0\u6807\u9898)'))
@@ -3734,6 +4062,15 @@ svg{width:100%;height:220px;display:block}
     var acts=el('div','acts')
     var go=el('a','btn go','\u91CD\u65B0\u89E3\u6790(\u52A0\u4E00\u4E2A\u6570\u636E\u70B9)');go.href='/?u='+encodeURIComponent(w.original_url||'');acts.appendChild(go)
     if(w.original_url){var o=el('a','btn','\u539F\u94FE');o.href=w.original_url;o.target='_blank';o.rel='noopener';acts.appendChild(o)}
+    var dlHref=w.play
+    if(!dlHref&&Array.isArray(extra.images)&&extra.images[0])dlHref=extra.images[0]
+    if(dlHref){var dl=el('a','btn','\u4E0B\u8F7D');dl.href=withFlag(dlHref,'download=1');dl.setAttribute('download','');acts.appendChild(dl)}
+    var sh=el('button','btn','\u5206\u4EAB')
+    sh.addEventListener('click',function(){
+      var link=location.origin+'/work?platform='+encodeURIComponent(w.platform||platform)+'&id='+encodeURIComponent(w.video_id||id)
+      copyText(link,function(){var old=sh.textContent;sh.textContent='\u5DF2\u590D\u5236';toast('\u5DF2\u590D\u5236');setTimeout(function(){sh.textContent=old},1200)})
+    })
+    acts.appendChild(sh)
     meta.appendChild(acts)
     head.appendChild(meta)
     app.appendChild(head)
@@ -4294,8 +4631,11 @@ textarea::placeholder{color:var(--faint)}
 #out{margin-top:6px}
 .card{display:flex;gap:20px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
 @media(max-width:560px){.card{flex-direction:column}}
-.frame{position:relative;flex:0 0 200px;aspect-ratio:9/16;border-radius:10px;overflow:hidden;background:#0e0d12;border:1px solid var(--line)}
-.frame img,.frame video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
+.frame{position:relative;flex:0 0 auto;width:min(240px,100%);max-height:min(72vh,640px);aspect-ratio:9/16;border-radius:10px;overflow:hidden;background:#0e0d12;border:1px solid var(--line)}
+.frame.is-h{width:min(520px,100%);max-height:min(52vh,420px)}
+.frame img,.frame video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
+.playhint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:42px;color:#fff;text-shadow:0 2px 12px #000;background:rgba(0,0,0,.18);pointer-events:none}
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:rgba(20,18,26,.92);color:var(--teal);font-family:var(--mono);font-size:12px;letter-spacing:.08em;padding:8px 14px;border-radius:8px;border:1px solid var(--line);z-index:80;pointer-events:none}
 .badge{position:absolute;left:10px;top:10px;font-family:var(--mono);font-size:11px;letter-spacing:.1em;background:rgba(20,18,26,.78);color:var(--teal);padding:3px 8px;border-radius:6px;backdrop-filter:blur(4px)}
 .meta{flex:1;min-width:0;display:flex;flex-direction:column}
 .nick{font-family:var(--serif);font-size:20px;letter-spacing:.02em}
@@ -4386,12 +4726,63 @@ footer a{color:var(--muted)}
     }catch(e){if(my===inflight)setStatus('\u7F51\u7EDC\u9519\u8BEF\uFF1A'+e.message,'err')}
   }
 
-  function withDownload(href){return href+(href.indexOf('?')>-1?'&':'?')+'download=1'}
+  function withFlag(href,flag){if(!href)return href;return href+(href.indexOf('?')>-1?'&':'?')+flag}
+  function withDownload(href){return withFlag(href,'download=1')}
   function dlBtn(href,label){var a=el('a','btn',label);a.href=withDownload(href);a.setAttribute('download','');return a}
+  function toast(msg){
+    var t=el('div','toast',msg)
+    document.body.appendChild(t)
+    setTimeout(function(){if(t.parentNode)t.parentNode.removeChild(t)},1600)
+  }
+  function fallbackCopy(text,done){
+    var ta=document.createElement('textarea')
+    ta.value=text;ta.setAttribute('readonly','');ta.style.cssText='position:fixed;left:-9999px;top:0'
+    document.body.appendChild(ta);ta.select();ta.setSelectionRange(0,text.length)
+    var ok=false
+    try{ok=document.execCommand('copy')}catch(e){}
+    document.body.removeChild(ta)
+    if(ok)done()
+  }
+  function copyText(text,done){
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done,function(){fallbackCopy(text,done)})
+    }else fallbackCopy(text,done)
+  }
   function copyBtn(text,label){
     var b=el('button','btn ghost',label)
-    b.addEventListener('click',function(){navigator.clipboard.writeText(text).then(function(){var o=b.textContent;b.textContent='\u5DF2\u590D\u5236';setTimeout(function(){b.textContent=o},1200)})})
+    b.addEventListener('click',function(){copyText(text,function(){var o=b.textContent;b.textContent='\u5DF2\u590D\u5236';toast('\u5DF2\u590D\u5236');setTimeout(function(){b.textContent=o},1200)})})
     return b
+  }
+  function workPageUrl(platform,id){return location.origin+'/work?platform='+encodeURIComponent(platform)+'&id='+encodeURIComponent(id)}
+  function shareBtn(platform,id){
+    var b=el('button','btn ghost','\u5206\u4EAB')
+    b.addEventListener('click',function(){copyText(workPageUrl(platform,id),function(){var o=b.textContent;b.textContent='\u5DF2\u590D\u5236';toast('\u5DF2\u590D\u5236');setTimeout(function(){b.textContent=o},1200)})})
+    return b
+  }
+  function applyAspect(frame,w,h){
+    w=Number(w)||0;h=Number(h)||0
+    if(!(w>0&&h>0))return
+    frame.style.aspectRatio=w+' / '+h
+    if(w>=h)frame.classList.add('is-h');else frame.classList.remove('is-h')
+  }
+  function clickToPlay(frame,cover,playUrl,w,h){
+    applyAspect(frame,w,h)
+    var im=el('img');im.src=cover||'';im.alt='\u9884\u89C8';im.loading='lazy'
+    frame.appendChild(im)
+    frame.appendChild(el('span','playhint','\u25B6'))
+    frame.style.cursor='pointer'
+    frame.addEventListener('click',function start(){
+      frame.removeEventListener('click',start)
+      frame.innerHTML=''
+      var v=el('video');v.controls=true;v.autoplay=true;v.playsInline=true;v.preload='metadata'
+      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
+      if(cover)v.poster=cover
+      v.src=playUrl
+      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
+      frame.appendChild(v)
+      frame.appendChild(el('span','badge','\u89C6\u9891'))
+      var p=v.play();if(p&&p.catch)p.catch(function(){})
+    })
   }
   function stat(label,n){var w=el('span','stat');w.appendChild(el('b',null,fmt(n)));w.appendChild(el('i',null,label));return w}
 
@@ -4402,13 +4793,14 @@ footer a{color:var(--muted)}
     var frame=el('div','frame')
     var cover=d.cover_data&&d.cover_data.cover?d.cover_data.cover:''
     var firstImg=(d.image_data&&(d.image_data.no_watermark_image_list||[])[0])||''
-    if(d.type==='video'&&d.video_data&&d.video_data.nwm_video_url){
-      var v=el('video');v.controls=true;v.playsInline=true;v.preload='metadata';v.setAttribute('playsinline','')
-      if(cover)v.poster=cover
-      v.src=d.video_data.nwm_video_url
-      frame.appendChild(v)
+    var vw=d.video_data&&d.video_data.width,vh=d.video_data&&d.video_data.height
+    var playUrl=d.video_data&&(d.video_data.nwm_video_url_HQ||d.video_data.nwm_video_url)
+    if(d.type==='video'&&playUrl){
+      clickToPlay(frame,cover,playUrl,vw,vh)
     }else{
-      var im0=el('img');im0.src=cover||firstImg;im0.alt='\u9884\u89C8';im0.loading='lazy';frame.appendChild(im0)
+      var im0=el('img');im0.src=cover||firstImg;im0.alt='\u9884\u89C8';im0.loading='lazy'
+      im0.addEventListener('load',function(){if(im0.naturalWidth&&im0.naturalHeight)applyAspect(frame,im0.naturalWidth,im0.naturalHeight)})
+      frame.appendChild(im0)
     }
     frame.appendChild(el('span','badge',d.type==='image'?'\u56FE\u96C6':'\u89C6\u9891'))
     card.appendChild(frame)
@@ -4422,13 +4814,16 @@ footer a{color:var(--muted)}
       meta.appendChild(st)}
 
     var acts=el('div','acts')
-    if(d.type==='video'&&d.video_data){
-      acts.appendChild(dlBtn(d.video_data.nwm_video_url,'\u4E0B\u8F7D\u65E0\u6C34\u5370'))
-      acts.appendChild(copyBtn(d.video_data.nwm_video_url,'\u590D\u5236\u76F4\u94FE'))
+    if(d.type==='video'&&playUrl){
+      acts.appendChild(dlBtn(playUrl,'\u4E0B\u8F7D'))
+      acts.appendChild(copyBtn(playUrl,'\u590D\u5236\u76F4\u94FE'))
     }
     if(d.type==='image'&&d.image_data){
-      (d.image_data.no_watermark_image_list||[]).forEach(function(u,i){acts.appendChild(dlBtn(u,'\u56FE'+(i+1)))})
+      var imgs=d.image_data.no_watermark_image_list||[]
+      if(imgs[0])acts.appendChild(dlBtn(imgs[0],'\u4E0B\u8F7D'))
+      imgs.forEach(function(u,i){acts.appendChild(dlBtn(u,'\u56FE'+(i+1)))})
     }
+    if(d.platform&&d.video_id)acts.appendChild(shareBtn(d.platform,d.video_id))
     if(!lastGuest){
       var raw=el('button','btn ghost','\u539F\u59CB JSON')
       raw.addEventListener('click',function(){var p=$('#raw');if(!p){p=el('pre');p.id='raw';out.appendChild(p)}p.textContent=JSON.stringify(d,null,2)})
@@ -4537,10 +4932,11 @@ var DOCS_HTML = `<!doctype html>
 <h2>\u53CD\u4EE3 + R2 \u7F13\u5B58 <small>/proxy</small></h2>
 <div class=route><span class=m>GET</span><span class=lock>\u{1F512}</span> <code>/proxy?platform=douyin|tiktok&id=&kind=nwm&download=0&refresh=0</code></div>
 <small>
-\u6309 ID \u7A33\u5B9A\u7F13\u5B58\u7684\u5A92\u4F53\u53CD\u4EE3\uFF1Aworker \u7528\u6B63\u786E\u7684 Referer \u62C9\u53D6 CDN \u5B57\u8282\u5E76\u5B58\u5165 R2\uFF08key = <code>media/{platform}/{id}/{kind}</code>\uFF09\uFF0C\u7B7E\u540D url \u8FC7\u671F\u4E5F\u7167\u6837\u547D\u4E2D\uFF1B\u652F\u6301 Range\uFF08\u89C6\u9891\u62D6\u52A8\uFF09\u3002<br>
-kind: <code>nwm</code>\uFF08\u65E0\u6C34\u5370\u89C6\u9891 HQ\uFF09\xB7 <code>wm</code>\uFF08\u6709\u6C34\u5370\u89C6\u9891\uFF09\xB7 <code>cover</code>\uFF08\u5C01\u9762\uFF09\xB7 <code>image0/1/\u2026</code>\uFF08\u65E0\u6C34\u5370\u56FE\uFF09\xB7 <code>imagewm0/1/\u2026</code>\uFF08\u6709\u6C34\u5370\u56FE\uFF09\u3002<br>
+\u6309 ID \u7A33\u5B9A\u7F13\u5B58\u7684\u5A92\u4F53\u53CD\u4EE3\uFF1Aworker \u7528\u6B63\u786E\u7684 Referer \u62C9\u53D6 CDN \u5B57\u8282\u5E76\u5B58\u5165 R2\uFF08key = <code>media/v2/{platform}/{id}/{kind}</code>\uFF09\uFF0C\u7B7E\u540D url \u8FC7\u671F\u4E5F\u7167\u6837\u547D\u4E2D\uFF1B\u652F\u6301 Range\uFF08\u89C6\u9891\u62D6\u52A8\uFF09\u3002<code>?download=1</code> \u52A0 <code>Content-Disposition: attachment</code>\uFF08\u6587\u4EF6\u540D <code>{author}-{desc}-{id}.mp4</code>\uFF09\u3002<br>
+kind: <code>nwm</code>\uFF08\u65E0\u6C34\u5370\u89C6\u9891 HQ\uFF1Bplaywm \u4F1A\u6539\u5199\u6210 play\uFF0C\u6C38\u4E0D\u56DE\u6C34\u5370\u94FE\uFF09\xB7 <code>wm</code>\uFF08\u6709\u6C34\u5370\u89C6\u9891\uFF09\xB7 <code>cover</code>\uFF08\u5C01\u9762\uFF09\xB7 <code>image0/1/\u2026</code>\uFF08\u65E0\u6C34\u5370\u56FE\uFF09\xB7 <code>imagewm0/1/\u2026</code>\uFF08\u6709\u6C34\u5370\u56FE\uFF09\u3002<br>
 \u9274\u6743\u7B7E\u540D\u4E32\u4E3A <code>"proxy{platform}{id}"</code>\uFF08\u4E0E kind \u65E0\u5173\uFF0C\u4E00\u4E2A auth \u8986\u76D6\u8BE5\u4F5C\u54C1\u6240\u6709 kind\uFF09\u3002video_data?proxy=1 \u91CD\u5199\u51FA\u7684\u94FE\u63A5\u5DF2\u81EA\u5E26 <code>&auth=</code>\uFF0C\u53EF\u76F4\u63A5\u5F53\u64AD\u653E\u5668 src\u3002<br>
-\u5143\u6570\u636E\uFF08\u89E3\u6790\u540E\u7684\u89C6\u9891\u4FE1\u606F\uFF09\u4EE5 JSON \u6587\u4EF6\u7F13\u5B58\u5728 R2 <code>meta/{platform}/{id}.json</code>\uFF0C\u9ED8\u8BA4 1 \u5C0F\u65F6\uFF08env <code>META_CACHE_TTL</code> \u53EF\u8C03\uFF0C<code>?refresh=1</code> \u5F3A\u5237\uFF09\u3002\u9700\u8981\u7ED1\u5B9A R2\uFF1Aenv <code>DOUYIN_R2</code>\uFF08\u672A\u7ED1\u5B9A\u5219\u5168\u90E8\u9000\u5316\u4E3A\u4E0D\u7F13\u5B58\u3001\u5B9E\u65F6\u76F4\u8FDE\uFF09\u3002
+\u5143\u6570\u636E\uFF08\u89E3\u6790\u540E\u7684\u89C6\u9891\u4FE1\u606F\uFF09\u4EE5 JSON \u6587\u4EF6\u7F13\u5B58\u5728 R2 <code>meta/v2/{platform}/{id}.json</code>\uFF0C\u9ED8\u8BA4 1 \u5C0F\u65F6\uFF08env <code>META_CACHE_TTL</code> \u53EF\u8C03\uFF0C<code>?refresh=1</code> \u5F3A\u5237\uFF09\u3002\u9700\u8981\u7ED1\u5B9A R2\uFF1Aenv <code>DOUYIN_R2</code>\uFF08\u672A\u7ED1\u5B9A\u5219\u5168\u90E8\u9000\u5316\u4E3A\u4E0D\u7F13\u5B58\u3001\u5B9E\u65F6\u76F4\u8FDE\uFF09\u3002<br>
+<code>source</code> \u5B57\u6BB5\u6807\u8BB0 <code>signed</code>\uFF08web detail\uFF09\u6216 <code>share</code>\uFF08iesdouyin \u5206\u4EAB\u9875\u56DE\u9000\uFF09\u3002master token \u52A0 <code>?debug=1</code> \u53EF\u770B\u8131\u654F\u540E\u7684 signed-endpoint \u5931\u8D25\u539F\u56E0\uFF08uifid/msToken/fp \u5DF2 REDACTED\uFF09\u3002
 </small>
 
 </body></html>`;

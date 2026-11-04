@@ -1,9 +1,10 @@
 // /api/hybrid/* and /download handlers.
 import { HTTPException } from '../utils/http-exception.js'
 import { jsonResponse } from '../utils/respond.js'
-import { isAuthorised, getClientIp } from '../utils/auth.js'
+import { isAuthorised, getClientIp, requireAuth, wantsDebug } from '../utils/auth.js'
 import { hybridParseSingleVideo, resolvePlatformId } from '../hybrid/crawler.js'
 import { rewriteMinimalToProxy } from '../utils/proxy-link.js'
+import { toPlayUrl, isWatermarkUrl, downloadFilename, contentDispositionAttachment } from '../utils/media.js'
 import { rateLimitHit } from '../utils/db.js'
 import { ingestWork } from '../utils/ingest.js'
 import { maybeFetchComments } from '../utils/comments.js'
@@ -49,14 +50,19 @@ export async function hybridService (route, request, ctx) {
     const { platform, id } = await resolvePlatformId(target)
     // Fetch + map + log into the D1 aggregation layer (best-effort, stores
     // permanent proxied cover/play links so /admin + /discover render直接).
-    const { raw, min } = await ingestWork(ctx, request, platform, id, target, refresh)
+    const { raw, min, source, signed_error } = await ingestWork(ctx, request, platform, id, target, refresh)
 
     // Async: refresh this work's comments into D1 (best-effort, 6h TTL).
     if (ctx.waitUntil) ctx.waitUntil(maybeFetchComments(ctx, platform, id))
 
+    const debug = wantsDebug(request, ctx)
     let data = minimal ? min : raw
     if (minimal && proxy) data = rewriteMinimalToProxy(data, request, ctx, linkTtl)
-    return jsonResponse(data, { router: 'hybrid/video_data', params: { url: target, minimal, proxy, guest } })
+    const params = { url: target, minimal, proxy, guest, source: source || min?.source || null }
+    if (debug) params.signed_error = signed_error || null
+    const headers = {}
+    if (source) headers['x-aweme-source'] = source
+    return jsonResponse(data, { router: 'hybrid/video_data', params, headers })
   }
 
   if (request.method === 'POST' && route === 'update_cookie') {
@@ -84,6 +90,10 @@ export async function downloadService (request, ctx) {
     fileUrl = withWatermark
       ? (data.video_data.wm_video_url_HQ || data.video_data.wm_video_url)
       : (data.video_data.nwm_video_url_HQ || data.video_data.nwm_video_url)
+    if (!withWatermark && fileUrl) fileUrl = toPlayUrl(fileUrl)
+    if (!withWatermark && isWatermarkUrl(fileUrl)) {
+      throw new HTTPException(502, { message: 'nwm resolved to a watermarked playwm URL' })
+    }
     ext = 'mp4'
   } else {
     const list = withWatermark ? data.image_data.watermark_image_list : data.image_data.no_watermark_image_list
@@ -102,11 +112,16 @@ export async function downloadService (request, ctx) {
     throw new HTTPException(502, { message: `Failed to fetch media (${upstream.status})` })
   }
 
-  const filename = `${data.platform}_${data.video_id}.${ext}`
+  const filename = downloadFilename({
+    author: data.author?.nickname,
+    desc: data.desc,
+    id: data.video_id,
+    ext
+  })
   const headers = new Headers()
   headers.set('content-type', upstream.headers.get('content-type') || (ext === 'mp4' ? 'video/mp4' : 'image/jpeg'))
   const len = upstream.headers.get('content-length')
   if (len) headers.set('content-length', len)
-  headers.set('content-disposition', `attachment; filename="${filename}"`)
+  headers.set('content-disposition', contentDispositionAttachment(filename))
   return new Response(upstream.body, { status: 200, headers })
 }

@@ -32,7 +32,7 @@ check('extractMsToken', extractMsToken(jar) === 'MsTokFromJar')
 check('extractVerifyFp from s_v_web_id', extractVerifyFp(jar) === 'verify_abc_def')
 check('sessionFromCookie packs the three', (() => {
   const s = sessionFromCookie(jar)
-  return s.uifid === 'UiFidPrimaryValue' && s.msToken === 'MsTokFromJar' && s.verifyFp === 'verify_abc_def'
+  return s.uifid === 'UiFidPrimaryValue' && s.msToken === 'MsTokFromJar' && s.verifyFp === 'verify_abc_def' && s.webid === ''
 })())
 
 // --- default param set: uifid sits immediately before msToken ---
@@ -82,15 +82,34 @@ const ctx = {
     cache: { metaTtl: 3600 }
   }
 }
-const assembled = buildDouyinWebParams(ctx, { aweme_id: '7372484719365098803' })
+const assembled = await buildDouyinWebParams(ctx, { aweme_id: '7372484719365098803' })
 check('buildDouyinWebParams.uifid from cookie', assembled.uifid === 'UiFidPrimaryValue')
 check('buildDouyinWebParams.msToken from cookie (not empty)', assembled.msToken === 'MsTokFromJar')
 check('buildDouyinWebParams.verifyFp from s_v_web_id', assembled.verifyFp === 'verify_abc_def' && assembled.fp === 'verify_abc_def')
 check('buildDouyinWebParams extra keys append', assembled.aweme_id === '7372484719365098803')
+check('buildDouyinWebParams omits webid when cookie has none', assembled.webid === undefined)
 
-const noCookie = buildDouyinWebParams({ config: { douyin: { cookie: '' } } })
-check('no cookie -> empty uifid still present', noCookie.uifid === '')
-check('no cookie -> generated non-empty msToken', typeof noCookie.msToken === 'string' && noCookie.msToken.length > 0)
+const realFetch0 = globalThis.fetch
+const FAKE_REAL_MS = 'R'.repeat(128)
+globalThis.fetch = async (input) => {
+  const url = String(input)
+  if (url.includes('mssdk.bytedance.com')) {
+    return new Response('ok', { status: 200, headers: { 'set-cookie': `msToken=${FAKE_REAL_MS}` } })
+  }
+  return realFetch0(input)
+}
+try {
+  const noCookie = await buildDouyinWebParams({ config: { douyin: { cookie: '' } } })
+  check('no cookie -> empty uifid still present', noCookie.uifid === '')
+  check('no cookie -> genRealMsToken (or fake fallback) non-empty', typeof noCookie.msToken === 'string' && noCookie.msToken.length > 0)
+  check('no cookie -> uses mssdk msToken when Set-Cookie is 128 chars', noCookie.msToken === FAKE_REAL_MS)
+
+  const noMs = await buildDouyinWebParams({ config: { douyin: { cookie: 'UIFID=UiOnly' } } })
+  check('cookie without msToken still sends uifid', noMs.uifid === 'UiOnly')
+  check('cookie without msToken uses genRealMsToken', noMs.msToken === FAKE_REAL_MS)
+} finally {
+  globalThis.fetch = realFetch0
+}
 
 check('redactUpstreamUrl hides uifid and msToken', (() => {
   const r = redactUpstreamUrl('https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=1&uifid=SECRETUIFID&msToken=SECRETMS&a_bogus=xx')
@@ -104,7 +123,9 @@ const SHARE_ITEM = {
   desc: 'share-ok',
   aweme_type: 4,
   video: {
-    play_addr: { uri: 'x', url_list: ['https://example.invalid/v.mp4'] },
+    width: 1920,
+    height: 1080,
+    play_addr: { uri: 'v0200shareuri', url_list: ['https://aweme.snssdk.com/aweme/v1/playwm/?video_id=v0200shareuri&line=0'] },
     cover: { url_list: ['https://example.invalid/c.jpg'] }
   },
   author: { nickname: 't' },
@@ -140,6 +161,14 @@ try {
   check('403 detail URL carried cookie msToken', lastDetailUrl.includes('msToken=MsTokFromJar'))
   check('403 detail still hits share fallback', shareHits === 1 && detailHits === 1)
   check('fallback returns share aweme_detail', data?.aweme_detail?.desc === 'share-ok')
+  check('fallback stamps source=share', data?.source === 'share')
+  check('fallback signed_error is redacted Argus reason',
+    typeof data?.signed_error === 'string' &&
+    /ArgusSecurityPlugin/.test(data.signed_error) &&
+    !data.signed_error.includes('UiFidPrimaryValue') &&
+    !data.signed_error.includes('MsTokFromJar') &&
+    /uifid=REDACTED/.test(data.signed_error))
+  check('meta-cache would persist source', data.source === 'share' && data.aweme_detail.video.play_addr.url_list[0].includes('playwm'))
   check('error URL redacts uifid if thrown', (() => {
     // Recreate the 403 message the way fetchGetJson would if share failed.
     const sample = redactUpstreamUrl(lastDetailUrl)

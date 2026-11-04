@@ -40,8 +40,11 @@ body{margin:0;background:radial-gradient(1100px 560px at 50% -10%,#221f2c 0%,tra
 a.back{font-family:var(--mono);font-size:11px;color:var(--faint);text-decoration:none}
 a.back:hover{color:var(--teal)}
 .head{display:flex;gap:18px;margin:14px 0 0;flex-wrap:wrap}
-.frame{flex:0 0 200px;width:200px;aspect-ratio:3/4;border-radius:10px;overflow:hidden;background:#0e0d12;border:1px solid var(--line)}
-.frame img,.frame video{width:100%;height:100%;object-fit:cover;display:block}
+.frame{position:relative;flex:0 0 auto;width:min(240px,100%);max-height:min(72vh,640px);aspect-ratio:9/16;border-radius:10px;overflow:hidden;background:#0e0d12;border:1px solid var(--line)}
+.frame.is-h{width:min(520px,100%);max-height:min(52vh,420px)}
+.frame img,.frame video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
+.playhint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:42px;color:#fff;text-shadow:0 2px 12px #000;background:rgba(0,0,0,.18);pointer-events:none}
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:rgba(20,18,26,.92);color:var(--teal);font-family:var(--mono);font-size:12px;letter-spacing:.08em;padding:8px 14px;border-radius:8px;border:1px solid var(--line);z-index:80;pointer-events:none}
 .meta{flex:1;min-width:240px}
 .title{font-family:var(--serif);font-size:22px;line-height:1.3;margin:0}
 .author{display:flex;align-items:center;gap:10px;margin:12px 0}
@@ -136,13 +139,58 @@ svg{width:100%;height:220px;display:block}
       var d=await r.json();render(d)
     }catch(e){$('#app').innerHTML='<p class=status>加载失败：'+e.message+'</p>'}
   }
+  function withFlag(href,flag){if(!href)return href;return href+(href.indexOf('?')>-1?'&':'?')+flag}
+  function toast(msg){
+    var t=el('div','toast',msg)
+    document.body.appendChild(t)
+    setTimeout(function(){if(t.parentNode)t.parentNode.removeChild(t)},1600)
+  }
+  function fallbackCopy(text,done){
+    var ta=document.createElement('textarea')
+    ta.value=text;ta.setAttribute('readonly','');ta.style.cssText='position:fixed;left:-9999px;top:0'
+    document.body.appendChild(ta);ta.select();ta.setSelectionRange(0,text.length)
+    var ok=false
+    try{ok=document.execCommand('copy')}catch(e){}
+    document.body.removeChild(ta)
+    if(ok)done()
+  }
+  function copyText(text,done){
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done,function(){fallbackCopy(text,done)})
+    }else fallbackCopy(text,done)
+  }
+  function applyAspect(frame,w,h){
+    w=Number(w)||0;h=Number(h)||0
+    if(!(w>0&&h>0))return
+    frame.style.aspectRatio=w+' / '+h
+    if(w>=h)frame.classList.add('is-h');else frame.classList.remove('is-h')
+  }
+  function clickToPlay(frame,cover,playUrl,w,h){
+    applyAspect(frame,w,h)
+    if(cover){var im=el('img');im.src=cover;im.alt='预览';frame.appendChild(im)}
+    frame.appendChild(el('span','playhint','▶'))
+    frame.style.cursor='pointer'
+    frame.addEventListener('click',function start(){
+      frame.removeEventListener('click',start)
+      frame.innerHTML=''
+      var v=document.createElement('video');v.controls=true;v.autoplay=true;v.preload='metadata'
+      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
+      if(cover)v.poster=cover
+      v.src=playUrl
+      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
+      frame.appendChild(v)
+      var p=v.play();if(p&&p.catch)p.catch(function(){})
+    })
+  }
   function render(d){
     var w=d.work||{},au=d.author||{},hist=d.history||[]
+    var extra=w.extra||{}
     var app=$('#app');app.innerHTML=''
     var head=el('div','head')
     var frame=el('div','frame')
-    if(w.play){var v=document.createElement('video');v.controls=true;v.setAttribute('playsinline','');v.preload='metadata';if(w.cover)v.poster=w.cover;v.src=w.play;frame.appendChild(v)}
-    else if(w.cover){var im=el('img');im.src=w.cover;frame.appendChild(im)}
+    var vw=extra.width,vh=extra.height
+    if(w.play){clickToPlay(frame,w.cover,w.play,vw,vh)}
+    else if(w.cover){var im=el('img');im.src=w.cover;im.addEventListener('load',function(){if(im.naturalWidth&&im.naturalHeight)applyAspect(frame,im.naturalWidth,im.naturalHeight)});frame.appendChild(im)}
     head.appendChild(frame)
     var meta=el('div','meta')
     meta.appendChild(el('div','title',w.description||'(无标题)'))
@@ -163,6 +211,15 @@ svg{width:100%;height:220px;display:block}
     var acts=el('div','acts')
     var go=el('a','btn go','重新解析(加一个数据点)');go.href='/?u='+encodeURIComponent(w.original_url||'');acts.appendChild(go)
     if(w.original_url){var o=el('a','btn','原链');o.href=w.original_url;o.target='_blank';o.rel='noopener';acts.appendChild(o)}
+    var dlHref=w.play
+    if(!dlHref&&Array.isArray(extra.images)&&extra.images[0])dlHref=extra.images[0]
+    if(dlHref){var dl=el('a','btn','下载');dl.href=withFlag(dlHref,'download=1');dl.setAttribute('download','');acts.appendChild(dl)}
+    var sh=el('button','btn','分享')
+    sh.addEventListener('click',function(){
+      var link=location.origin+'/work?platform='+encodeURIComponent(w.platform||platform)+'&id='+encodeURIComponent(w.video_id||id)
+      copyText(link,function(){var old=sh.textContent;sh.textContent='已复制';toast('已复制');setTimeout(function(){sh.textContent=old},1200)})
+    })
+    acts.appendChild(sh)
     meta.appendChild(acts)
     head.appendChild(meta)
     app.appendChild(head)
