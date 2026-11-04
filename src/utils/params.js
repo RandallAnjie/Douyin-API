@@ -40,12 +40,67 @@ export function rawJoin (obj) {
     .join('&')
 }
 
-// BaseRequestModel — the default query params on every Douyin web
-// call. Field order matches crawlers/douyin/web/models.py. msToken is
-// passed in (a_bogus path sets it to '', X-Bogus path uses a real or
-// fake msToken).
-export function baseRequestParams (msToken = '') {
+// Parse a Cookie header into { name: value }. First occurrence wins.
+// Values may contain '=' (base64); only the first '=' splits name/value.
+export function parseCookie (cookieStr) {
+  const out = {}
+  if (!cookieStr) return out
+  for (const part of String(cookieStr).split(';')) {
+    const idx = part.indexOf('=')
+    if (idx < 0) continue
+    const k = part.slice(0, idx).trim()
+    const v = part.slice(idx + 1).trim()
+    if (k && out[k] === undefined) out[k] = v
+  }
+  return out
+}
+
+function cookieGet (jar, names) {
+  const keys = Object.keys(jar)
+  for (const want of names) {
+    const wantLower = want.toLowerCase()
+    for (const k of keys) {
+      if (k.toLowerCase() === wantLower && jar[k]) return jar[k]
+    }
+  }
+  return ''
+}
+
+// Douyin Argus looks at the `uifid` QUERY param, not just the cookie.
+// Prefer the page-minted UIFID; UIFID_TEMP is the first-visit fallback
+// the site sets before a video is opened; lowercase `uifid` last.
+export function extractUifid (cookieStr) {
+  return cookieGet(parseCookie(cookieStr), ['UIFID', 'UIFID_TEMP', 'uifid'])
+}
+
+export function extractMsToken (cookieStr) {
+  return cookieGet(parseCookie(cookieStr), ['msToken'])
+}
+
+// verifyFp / fp on web APIs are the s_v_web_id cookie. Generated
+// values paired with a real UIFID get Argus "Signature Not Found".
+export function extractVerifyFp (cookieStr) {
+  return cookieGet(parseCookie(cookieStr), ['s_v_web_id'])
+}
+
+export function sessionFromCookie (cookieStr) {
   return {
+    uifid: extractUifid(cookieStr),
+    msToken: extractMsToken(cookieStr),
+    verifyFp: extractVerifyFp(cookieStr)
+  }
+}
+
+// BaseRequestModel — the default query params on every Douyin web
+// call. Field order matches crawlers/douyin/web/models.py, with
+// `uifid` (and optional verifyFp/fp) inserted immediately before
+// msToken — the browser position as of 2026-08 (webid, uifid,
+// verifyFp, fp, msToken). msToken is passed in (cookie value, or a
+// generated fake token; empty is accepted for tests).
+export function baseRequestParams (msToken = '', opts = {}) {
+  const uifid = opts.uifid ?? ''
+  const verifyFp = opts.verifyFp ?? ''
+  const params = {
     device_platform: 'webapp',
     aid: '6383',
     channel: 'channel_pc_web',
@@ -79,8 +134,16 @@ export function baseRequestParams (msToken = '') {
     time_list_query: '0',
     whale_cut_token: '',
     update_version_code: '170400',
-    msToken
+    uifid
   }
+  // Only emit verifyFp/fp when we have the cookie-issued value. A
+  // generated fp next to a real uifid is rejected as Signature Not Found.
+  if (verifyFp) {
+    params.verifyFp = verifyFp
+    params.fp = verifyFp
+  }
+  params.msToken = msToken
+  return params
 }
 
 // BaseLiveModel — for live room enter (fetch_user_live_videos).

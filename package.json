@@ -9,7 +9,7 @@
   "scripts": {
     "build": "node build.mjs",
     "lint": "oxlint .",
-    "test": "node test/parity.mjs",
+    "test": "node test/parity.mjs && node test/params.mjs",
     "test:e2e": "node test/e2e.mjs"
   },
   "dependencies": {

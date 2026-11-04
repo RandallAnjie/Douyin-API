@@ -10,39 +10,93 @@ import { getABogus } from '../sign/abogus.js'
 import { getXBogus } from '../sign/xbogus.js'
 import {
   baseRequestParams, baseLiveParams, baseLive2Params,
-  urlencode, rawJoin
+  urlencode, rawJoin, sessionFromCookie
 } from '../utils/params.js'
 import { fetchGetJson, buildHeaders } from '../utils/base-crawler.js'
 import { genFalseMsToken, genVerifyFp, genTtwid } from '../utils/tokens.js'
 import { DouyinEndpoints as EP, DOUYIN_REFERER } from './endpoints.js'
 
+function cookieOf (ctx) {
+  return ctx?.config?.douyin?.cookie || ''
+}
+
+// Shared BaseRequestModel fill for every www.douyin.com web call:
+// uifid from the cookie (UIFID / UIFID_TEMP / uifid), msToken from the
+// cookie or a generated fake token, verifyFp/fp only when s_v_web_id is
+// present. Extra keys are appended (pydantic subclass field order).
+export function buildDouyinWebParams (ctx, extra = {}) {
+  const session = sessionFromCookie(cookieOf(ctx))
+  const msToken = session.msToken || genFalseMsToken()
+  return {
+    ...baseRequestParams(msToken, { uifid: session.uifid, verifyFp: session.verifyFp }),
+    ...extra
+  }
+}
+
 async function douyinHeaders (ctx) {
-  let cookie = ctx.config.douyin.cookie
+  let cookie = cookieOf(ctx)
   if (!cookie) {
     // No operator cookie bound — bootstrap a minimal ttwid cookie so
     // requests at least carry a device token.
     const ttwid = await genTtwid()
     if (ttwid) cookie = `ttwid=${ttwid}`
   }
+  const extra = {}
+  // Browser XHRs send uifid as both a query param and a request header.
+  const uifid = sessionFromCookie(cookie).uifid
+  if (uifid) extra.uifid = uifid
   return buildHeaders({
     userAgent: ctx.config.douyin.userAgent,
     referer: DOUYIN_REFERER,
-    cookie
+    cookie,
+    extra
   })
 }
 
 // --- a_bogus endpoints ---
 
-async function aBogusGet (ctx, baseUrl, params) {
+// Assemble the signed URL. Exported so tests can assert the string
+// a_bogus signs is byte-identical to the query that goes on the wire.
+export function signedABogusUrl (baseUrl, params) {
   const paramStr = urlencode(params)
   const aBogus = getABogus(paramStr, 'GET')
-  const url = `${baseUrl}?${paramStr}&a_bogus=${encodeURIComponent(aBogus)}`
+  return {
+    paramStr,
+    aBogus,
+    url: `${baseUrl}?${paramStr}&a_bogus=${encodeURIComponent(aBogus)}`
+  }
+}
+
+async function aBogusGet (ctx, baseUrl, params) {
+  const { url } = signedABogusUrl(baseUrl, params)
   return fetchGetJson(url, await douyinHeaders(ctx))
 }
 
-export function fetchOneVideo (ctx, awemeId) {
-  const params = { ...baseRequestParams(''), aweme_id: awemeId }
-  return aBogusGet(ctx, EP.POST_DETAIL, params)
+export async function fetchOneVideo (ctx, awemeId) {
+  const params = buildDouyinWebParams(ctx, { aweme_id: awemeId })
+  let data = null
+  let primaryErr = null
+  try {
+    data = await aBogusGet(ctx, EP.POST_DETAIL, params)
+  } catch (err) {
+    primaryErr = err
+  }
+  if (data && data.aweme_detail) return data
+  // Signed web detail 403s (Argus Uifid / signature) or returns empty
+  // aweme_detail — the iesdouyin share page often still embeds the item.
+  const share = await fetchShareDetail(ctx, awemeId)
+  if (share.aweme_detail) {
+    return {
+      ...data,
+      aweme_detail: share.aweme_detail,
+      filter_detail: share.filter_detail || data?.filter_detail || null
+    }
+  }
+  if (share.filter_detail && !data?.filter_detail) {
+    return { ...data, aweme_detail: data?.aweme_detail || null, filter_detail: share.filter_detail }
+  }
+  if (primaryErr) throw primaryErr
+  return data
 }
 
 // Fallback source: the iesdouyin mobile share page embeds the full aweme
@@ -55,9 +109,15 @@ const SHARE_MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) 
 
 export async function fetchShareDetail (ctx, awemeId) {
   const url = `https://www.iesdouyin.com/share/video/${awemeId}/`
+  const headers = {
+    'User-Agent': SHARE_MOBILE_UA,
+    Referer: 'https://www.iesdouyin.com/'
+  }
+  const cookie = cookieOf(ctx)
+  if (cookie) headers.Cookie = cookie
   let html
   try {
-    const resp = await fetch(url, { headers: { 'User-Agent': SHARE_MOBILE_UA, Referer: 'https://www.iesdouyin.com/' } })
+    const resp = await fetch(url, { headers })
     html = await resp.text()
   } catch {
     return { aweme_detail: null }
@@ -75,12 +135,16 @@ export async function fetchShareDetail (ctx, awemeId) {
 }
 
 export function fetchUserPostVideos (ctx, secUserId, maxCursor, count) {
-  const params = { ...baseRequestParams(''), max_cursor: String(maxCursor), count: String(count), sec_user_id: secUserId }
+  const params = buildDouyinWebParams(ctx, {
+    max_cursor: String(maxCursor), count: String(count), sec_user_id: secUserId
+  })
   return aBogusGet(ctx, EP.USER_POST, params)
 }
 
 export function fetchUserLikeVideos (ctx, secUserId, maxCursor, count) {
-  const params = { ...baseRequestParams(''), max_cursor: String(maxCursor), count: String(count), sec_user_id: secUserId }
+  const params = buildDouyinWebParams(ctx, {
+    max_cursor: String(maxCursor), count: String(count), sec_user_id: secUserId
+  })
   return aBogusGet(ctx, EP.USER_FAVORITE_A, params)
 }
 
@@ -89,10 +153,7 @@ export function fetchUserLikeVideos (ctx, secUserId, maxCursor, count) {
 // KEYWORDS into actual videos. Needs the operator cookie; risk-control may
 // reject it (caught by the caller).
 export function fetchGeneralSearch (ctx, keyword, offset = 0, count = 10) {
-  const params = {
-    // Empty msToken (like the working fetch_one_video call); a FAKE msToken
-    // can itself trip risk control (2483).
-    ...baseRequestParams(''),
+  const params = buildDouyinWebParams(ctx, {
     search_channel: 'aweme_general',
     enable_history: '1',
     keyword,
@@ -104,7 +165,7 @@ export function fetchGeneralSearch (ctx, keyword, offset = 0, count = 10) {
     count: String(count),
     need_filter_settings: '1',
     list_type: 'multi'
-  }
+  })
   return aBogusGet(ctx, EP.GENERAL_SEARCH, params)
 }
 
@@ -112,7 +173,7 @@ export function fetchGeneralSearch (ctx, keyword, offset = 0, count = 10) {
 
 // Hot-search board (trending KEYWORDS, not videos). X-Bogus.
 export function fetchHotSearchList (ctx) {
-  const params = { ...baseRequestParams(genFalseMsToken()), detail_list: '1' }
+  const params = buildDouyinWebParams(ctx, { detail_list: '1' })
   return xBogusGet(ctx, EP.HOT_SEARCH, params)
 }
 
@@ -124,29 +185,30 @@ async function xBogusGet (ctx, baseUrl, params) {
 }
 
 export function handlerUserProfile (ctx, secUserId) {
-  const params = { ...baseRequestParams(genFalseMsToken()), sec_user_id: secUserId }
+  const params = buildDouyinWebParams(ctx, { sec_user_id: secUserId })
   return xBogusGet(ctx, EP.USER_DETAIL, params)
 }
 
 export function fetchUserMixVideos (ctx, mixId, cursor, count) {
-  const params = { ...baseRequestParams(genFalseMsToken()), cursor: String(cursor), count: String(count), mix_id: mixId }
+  const params = buildDouyinWebParams(ctx, {
+    cursor: String(cursor), count: String(count), mix_id: mixId
+  })
   return xBogusGet(ctx, EP.MIX_AWEME, params)
 }
 
 export function fetchVideoComments (ctx, awemeId, cursor, count) {
-  const params = {
-    ...baseRequestParams(genFalseMsToken()),
+  const params = buildDouyinWebParams(ctx, {
     aweme_id: awemeId, cursor: String(cursor), count: String(count),
     item_type: '0', insert_ids: '', whale_cut_token: '', cut_version: '1', rcFT: ''
-  }
+  })
   return xBogusGet(ctx, EP.POST_COMMENT, params)
 }
 
 export function fetchVideoCommentReplies (ctx, itemId, commentId, cursor, count) {
-  const params = {
-    ...baseRequestParams(genFalseMsToken()),
-    item_id: itemId, comment_id: commentId, cursor: String(cursor), count: String(count), item_type: '0'
-  }
+  const params = buildDouyinWebParams(ctx, {
+    item_id: itemId, comment_id: commentId, cursor: String(cursor),
+    count: String(count), item_type: '0'
+  })
   return xBogusGet(ctx, EP.POST_COMMENT_REPLY, params)
 }
 
@@ -161,9 +223,8 @@ export function fetchUserLiveVideosByRoomId (ctx, roomId) {
 }
 
 export function fetchLiveGiftRanking (ctx, roomId, rankType) {
-  const params = {
-    ...baseRequestParams(genFalseMsToken()),
+  const params = buildDouyinWebParams(ctx, {
     webcast_sdk_version: '2450', room_id: String(roomId), rank_type: String(rankType)
-  }
+  })
   return xBogusGet(ctx, EP.LIVE_GIFT_RANK, params)
 }
