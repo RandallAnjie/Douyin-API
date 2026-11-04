@@ -14,25 +14,35 @@ export function buildHeaders ({ userAgent, referer, cookie, extra = {} }) {
   return h
 }
 
+// Strip identity query values from URLs that end up in error messages
+// (JSON body + x-error-message). Never echo uifid / msToken / fp.
+export function redactUpstreamUrl (url) {
+  return String(url).replace(
+    /([?&](?:uifid|msToken|ms_token|verifyFp|fp|webid)=)[^&]*/gi,
+    '$1REDACTED'
+  )
+}
+
 async function parseJson (resp, url) {
+  const safeUrl = redactUpstreamUrl(url)
   const text = await resp.text()
   if (!resp.ok) {
     throw new HTTPException(resp.status === 404 ? 404 : 502, {
-      message: `Upstream ${resp.status} for ${url}: ${text.slice(0, 200)}`
+      message: `Upstream ${resp.status} for ${safeUrl}: ${text.slice(0, 200)}`
     })
   }
   if (!text) {
     // Douyin returns an empty body when it blocks the request (bad
     // cookie / signature). Surface it clearly.
     throw new HTTPException(502, {
-      message: `Upstream returned an empty body for ${url} — usually a bad/expired cookie or blocked signature.`
+      message: `Upstream returned an empty body for ${safeUrl} — usually a bad/expired cookie or blocked signature.`
     })
   }
   try {
     return JSON.parse(text)
   } catch {
     throw new HTTPException(502, {
-      message: `Upstream returned non-JSON for ${url}: ${text.slice(0, 200)}`
+      message: `Upstream returned non-JSON for ${safeUrl}: ${text.slice(0, 200)}`
     })
   }
 }

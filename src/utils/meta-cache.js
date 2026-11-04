@@ -14,15 +14,11 @@ export async function fetchDouyinDetailCached (ctx, awemeId, refresh = false) {
     const cached = await getJson(bucket, key, ctx.config.cache.metaTtl)
     if (cached) return { data: cached, cached: true }
   }
+  // fetchOneVideo already falls back to the iesdouyin share page when
+  // the signed web detail call 403s or returns no aweme_detail.
   const data = await douyin.fetchOneVideo(ctx, awemeId)
-  if (!data.aweme_detail) {
-    // Web detail endpoint returned nothing — try the share-page fallback.
-    const share = await douyin.fetchShareDetail(ctx, awemeId)
-    if (share.aweme_detail) data.aweme_detail = share.aweme_detail
-    else if (!data.filter_detail && share.filter_detail) data.filter_detail = share.filter_detail
-  }
   // Don't poison the cache with an empty/filtered response.
-  if (data.aweme_detail) putJson(bucket, ctx, key, data)
+  if (data && data.aweme_detail) putJson(bucket, ctx, key, data)
   return { data, cached: false }
 }
 

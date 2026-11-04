@@ -791,8 +791,48 @@ function urlencode(obj) {
 function rawJoin(obj) {
   return Object.entries(obj).map(([k, v]) => `${k}=${v}`).join("&");
 }
-function baseRequestParams(msToken = "") {
+function parseCookie(cookieStr) {
+  const out = {};
+  if (!cookieStr) return out;
+  for (const part of String(cookieStr).split(";")) {
+    const idx = part.indexOf("=");
+    if (idx < 0) continue;
+    const k = part.slice(0, idx).trim();
+    const v = part.slice(idx + 1).trim();
+    if (k && out[k] === void 0) out[k] = v;
+  }
+  return out;
+}
+function cookieGet(jar, names) {
+  const keys = Object.keys(jar);
+  for (const want of names) {
+    const wantLower = want.toLowerCase();
+    for (const k of keys) {
+      if (k.toLowerCase() === wantLower && jar[k]) return jar[k];
+    }
+  }
+  return "";
+}
+function extractUifid(cookieStr) {
+  return cookieGet(parseCookie(cookieStr), ["UIFID", "UIFID_TEMP", "uifid"]);
+}
+function extractMsToken(cookieStr) {
+  return cookieGet(parseCookie(cookieStr), ["msToken"]);
+}
+function extractVerifyFp(cookieStr) {
+  return cookieGet(parseCookie(cookieStr), ["s_v_web_id"]);
+}
+function sessionFromCookie(cookieStr) {
   return {
+    uifid: extractUifid(cookieStr),
+    msToken: extractMsToken(cookieStr),
+    verifyFp: extractVerifyFp(cookieStr)
+  };
+}
+function baseRequestParams(msToken = "", opts = {}) {
+  const uifid = opts.uifid ?? "";
+  const verifyFp = opts.verifyFp ?? "";
+  const params = {
     device_platform: "webapp",
     aid: "6383",
     channel: "channel_pc_web",
@@ -826,8 +866,14 @@ function baseRequestParams(msToken = "") {
     time_list_query: "0",
     whale_cut_token: "",
     update_version_code: "170400",
-    msToken
+    uifid
   };
+  if (verifyFp) {
+    params.verifyFp = verifyFp;
+    params.fp = verifyFp;
+  }
+  params.msToken = msToken;
+  return params;
 }
 function baseLiveParams() {
   return {
@@ -870,23 +916,30 @@ function buildHeaders({ userAgent, referer, cookie, extra = {} }) {
   if (cookie) h.Cookie = cookie;
   return h;
 }
+function redactUpstreamUrl(url) {
+  return String(url).replace(
+    /([?&](?:uifid|msToken|ms_token|verifyFp|fp|webid)=)[^&]*/gi,
+    "$1REDACTED"
+  );
+}
 async function parseJson(resp, url) {
+  const safeUrl = redactUpstreamUrl(url);
   const text = await resp.text();
   if (!resp.ok) {
     throw new HTTPException(resp.status === 404 ? 404 : 502, {
-      message: `Upstream ${resp.status} for ${url}: ${text.slice(0, 200)}`
+      message: `Upstream ${resp.status} for ${safeUrl}: ${text.slice(0, 200)}`
     });
   }
   if (!text) {
     throw new HTTPException(502, {
-      message: `Upstream returned an empty body for ${url} \u2014 usually a bad/expired cookie or blocked signature.`
+      message: `Upstream returned an empty body for ${safeUrl} \u2014 usually a bad/expired cookie or blocked signature.`
     });
   }
   try {
     return JSON.parse(text);
   } catch {
     throw new HTTPException(502, {
-      message: `Upstream returned non-JSON for ${url}: ${text.slice(0, 200)}`
+      message: `Upstream returned non-JSON for ${safeUrl}: ${text.slice(0, 200)}`
     });
   }
 }
@@ -990,34 +1043,82 @@ var DouyinEndpoints = {
 var DOUYIN_REFERER = "https://www.douyin.com/";
 
 // src/douyin/crawler.js
+function cookieOf(ctx) {
+  return ctx?.config?.douyin?.cookie || "";
+}
+function buildDouyinWebParams(ctx, extra = {}) {
+  const session = sessionFromCookie(cookieOf(ctx));
+  const msToken = session.msToken || genFalseMsToken();
+  return {
+    ...baseRequestParams(msToken, { uifid: session.uifid, verifyFp: session.verifyFp }),
+    ...extra
+  };
+}
 async function douyinHeaders(ctx) {
-  let cookie = ctx.config.douyin.cookie;
+  let cookie = cookieOf(ctx);
   if (!cookie) {
     const ttwid = await genTtwid();
     if (ttwid) cookie = `ttwid=${ttwid}`;
   }
+  const extra = {};
+  const uifid = sessionFromCookie(cookie).uifid;
+  if (uifid) extra.uifid = uifid;
   return buildHeaders({
     userAgent: ctx.config.douyin.userAgent,
     referer: DOUYIN_REFERER,
-    cookie
+    cookie,
+    extra
   });
 }
-async function aBogusGet(ctx, baseUrl, params) {
+function signedABogusUrl(baseUrl, params) {
   const paramStr = urlencode(params);
   const aBogus = getABogus(paramStr, "GET");
-  const url = `${baseUrl}?${paramStr}&a_bogus=${encodeURIComponent(aBogus)}`;
+  return {
+    paramStr,
+    aBogus,
+    url: `${baseUrl}?${paramStr}&a_bogus=${encodeURIComponent(aBogus)}`
+  };
+}
+async function aBogusGet(ctx, baseUrl, params) {
+  const { url } = signedABogusUrl(baseUrl, params);
   return fetchGetJson(url, await douyinHeaders(ctx));
 }
-function fetchOneVideo(ctx, awemeId) {
-  const params = { ...baseRequestParams(""), aweme_id: awemeId };
-  return aBogusGet(ctx, DouyinEndpoints.POST_DETAIL, params);
+async function fetchOneVideo(ctx, awemeId) {
+  const params = buildDouyinWebParams(ctx, { aweme_id: awemeId });
+  let data = null;
+  let primaryErr = null;
+  try {
+    data = await aBogusGet(ctx, DouyinEndpoints.POST_DETAIL, params);
+  } catch (err) {
+    primaryErr = err;
+  }
+  if (data && data.aweme_detail) return data;
+  const share = await fetchShareDetail(ctx, awemeId);
+  if (share.aweme_detail) {
+    return {
+      ...data,
+      aweme_detail: share.aweme_detail,
+      filter_detail: share.filter_detail || data?.filter_detail || null
+    };
+  }
+  if (share.filter_detail && !data?.filter_detail) {
+    return { ...data, aweme_detail: data?.aweme_detail || null, filter_detail: share.filter_detail };
+  }
+  if (primaryErr) throw primaryErr;
+  return data;
 }
 var SHARE_MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1";
 async function fetchShareDetail(ctx, awemeId) {
   const url = `https://www.iesdouyin.com/share/video/${awemeId}/`;
+  const headers2 = {
+    "User-Agent": SHARE_MOBILE_UA,
+    Referer: "https://www.iesdouyin.com/"
+  };
+  const cookie = cookieOf(ctx);
+  if (cookie) headers2.Cookie = cookie;
   let html;
   try {
-    const resp = await fetch(url, { headers: { "User-Agent": SHARE_MOBILE_UA, Referer: "https://www.iesdouyin.com/" } });
+    const resp = await fetch(url, { headers: headers2 });
     html = await resp.text();
   } catch {
     return { aweme_detail: null };
@@ -1038,11 +1139,19 @@ async function fetchShareDetail(ctx, awemeId) {
   };
 }
 function fetchUserPostVideos(ctx, secUserId, maxCursor, count) {
-  const params = { ...baseRequestParams(""), max_cursor: String(maxCursor), count: String(count), sec_user_id: secUserId };
+  const params = buildDouyinWebParams(ctx, {
+    max_cursor: String(maxCursor),
+    count: String(count),
+    sec_user_id: secUserId
+  });
   return aBogusGet(ctx, DouyinEndpoints.USER_POST, params);
 }
 function fetchUserLikeVideos(ctx, secUserId, maxCursor, count) {
-  const params = { ...baseRequestParams(""), max_cursor: String(maxCursor), count: String(count), sec_user_id: secUserId };
+  const params = buildDouyinWebParams(ctx, {
+    max_cursor: String(maxCursor),
+    count: String(count),
+    sec_user_id: secUserId
+  });
   return aBogusGet(ctx, DouyinEndpoints.USER_FAVORITE_A, params);
 }
 async function xBogusGet(ctx, baseUrl, params) {
@@ -1052,16 +1161,19 @@ async function xBogusGet(ctx, baseUrl, params) {
   return fetchGetJson(url, await douyinHeaders(ctx));
 }
 function handlerUserProfile(ctx, secUserId) {
-  const params = { ...baseRequestParams(genFalseMsToken()), sec_user_id: secUserId };
+  const params = buildDouyinWebParams(ctx, { sec_user_id: secUserId });
   return xBogusGet(ctx, DouyinEndpoints.USER_DETAIL, params);
 }
 function fetchUserMixVideos(ctx, mixId, cursor, count) {
-  const params = { ...baseRequestParams(genFalseMsToken()), cursor: String(cursor), count: String(count), mix_id: mixId };
+  const params = buildDouyinWebParams(ctx, {
+    cursor: String(cursor),
+    count: String(count),
+    mix_id: mixId
+  });
   return xBogusGet(ctx, DouyinEndpoints.MIX_AWEME, params);
 }
 function fetchVideoComments(ctx, awemeId, cursor, count) {
-  const params = {
-    ...baseRequestParams(genFalseMsToken()),
+  const params = buildDouyinWebParams(ctx, {
     aweme_id: awemeId,
     cursor: String(cursor),
     count: String(count),
@@ -1070,18 +1182,17 @@ function fetchVideoComments(ctx, awemeId, cursor, count) {
     whale_cut_token: "",
     cut_version: "1",
     rcFT: ""
-  };
+  });
   return xBogusGet(ctx, DouyinEndpoints.POST_COMMENT, params);
 }
 function fetchVideoCommentReplies(ctx, itemId, commentId, cursor, count) {
-  const params = {
-    ...baseRequestParams(genFalseMsToken()),
+  const params = buildDouyinWebParams(ctx, {
     item_id: itemId,
     comment_id: commentId,
     cursor: String(cursor),
     count: String(count),
     item_type: "0"
-  };
+  });
   return xBogusGet(ctx, DouyinEndpoints.POST_COMMENT_REPLY, params);
 }
 function fetchUserLiveVideos(ctx, webcastId) {
@@ -1093,12 +1204,11 @@ function fetchUserLiveVideosByRoomId(ctx, roomId) {
   return xBogusGet(ctx, DouyinEndpoints.LIVE_INFO_ROOM_ID, params);
 }
 function fetchLiveGiftRanking(ctx, roomId, rankType) {
-  const params = {
-    ...baseRequestParams(genFalseMsToken()),
+  const params = buildDouyinWebParams(ctx, {
     webcast_sdk_version: "2450",
     room_id: String(roomId),
     rank_type: String(rankType)
-  };
+  });
   return xBogusGet(ctx, DouyinEndpoints.LIVE_GIFT_RANK, params);
 }
 
@@ -1487,12 +1597,7 @@ async function fetchDouyinDetailCached(ctx, awemeId, refresh = false) {
     if (cached) return { data: cached, cached: true };
   }
   const data = await fetchOneVideo(ctx, awemeId);
-  if (!data.aweme_detail) {
-    const share = await fetchShareDetail(ctx, awemeId);
-    if (share.aweme_detail) data.aweme_detail = share.aweme_detail;
-    else if (!data.filter_detail && share.filter_detail) data.filter_detail = share.filter_detail;
-  }
-  if (data.aweme_detail) putJson(bucket, ctx, key, data);
+  if (data && data.aweme_detail) putJson(bucket, ctx, key, data);
   return { data, cached: false };
 }
 async function fetchTiktokAwemeCached(ctx, awemeId, refresh = false) {
