@@ -1444,31 +1444,59 @@ async function serveFromR2(bucket, request, key, contentType, minSize = 0) {
     }
   });
 }
-function teeIntoCache(bucket, ctx, key, upstreamResponse, contentType) {
-  if (!bucket || !upstreamResponse.ok || !upstreamResponse.body) return upstreamResponse;
-  const finalType = contentType || upstreamResponse.headers.get("content-type") || "application/octet-stream";
-  const lenHeader = upstreamResponse.headers.get("content-length");
+function streamMediaResponse(body, status, contentType, total, source) {
+  const out = new Headers();
+  out.set("content-type", contentType || "application/octet-stream");
+  if (total != null) out.set("content-length", String(total));
+  out.set("accept-ranges", "bytes");
+  out.set("cache-control", "public, max-age=300");
+  out.set("x-cache-source", source);
+  return new Response(body, { status, headers: out });
+}
+function teeIntoCache(bucket, ctx, key, upstreamResponse, contentType, opts = {}) {
+  const finalType = contentType || upstreamResponse?.headers?.get("content-type") || "application/octet-stream";
+  const lenHeader = upstreamResponse?.headers?.get("content-length");
   const total = lenHeader && /^\d+$/.test(lenHeader) ? Number(lenHeader) : null;
+  const minCacheBytes = Number(opts.minCacheBytes) || 0;
+  const status = upstreamResponse?.status || 200;
+  if (!bucket || !upstreamResponse?.ok || !upstreamResponse.body) {
+    return streamMediaResponse(upstreamResponse?.body || null, status, finalType, total, "upstream-plain");
+  }
   let userBranch, r2Branch;
   try {
     [userBranch, r2Branch] = upstreamResponse.body.tee();
   } catch {
-    return upstreamResponse;
+    return streamMediaResponse(upstreamResponse.body, status, finalType, total, "upstream-plain");
   }
-  const put = total != null && total > PART_SIZE ? r2PutMultipart(bucket, key, r2Branch, { httpMetadata: { contentType: finalType } }) : bucket.put(key, r2Branch, { httpMetadata: { contentType: finalType } }).catch((e) => {
+  const meta = { httpMetadata: { contentType: finalType } };
+  const put = (async () => {
     try {
-      console.error("[r2] put failed", key, e?.message || e);
-    } catch {
+      if (total != null && total < minCacheBytes) {
+        try {
+          await r2Branch.cancel();
+        } catch {
+        }
+        return false;
+      }
+      if (total != null && total > PART_SIZE) {
+        return r2PutMultipart(bucket, key, r2Branch, meta);
+      }
+      if (total != null) {
+        const buf = await new Response(r2Branch).arrayBuffer();
+        if (buf.byteLength < minCacheBytes) return false;
+        return r2PutRetry(bucket, key, () => new Response(buf).body, meta, 2);
+      }
+      return r2PutMultipart(bucket, key, r2Branch, meta);
+    } catch (e) {
+      try {
+        console.error("[r2] tee put failed", key, e?.message || e);
+      } catch {
+      }
+      return false;
     }
-  });
+  })();
   if (ctx?.waitUntil) ctx.waitUntil(put);
-  const out = new Headers();
-  out.set("content-type", finalType);
-  if (total != null) out.set("content-length", String(total));
-  out.set("accept-ranges", "bytes");
-  out.set("cache-control", "public, max-age=300");
-  out.set("x-cache-source", "upstream-tee");
-  return new Response(userBranch, { status: upstreamResponse.status, headers: out });
+  return streamMediaResponse(userBranch, status, finalType, total, "upstream-tee");
 }
 async function getJson(bucket, key, ttlSeconds) {
   if (!bucket || typeof bucket.get !== "function") return null;
@@ -3081,7 +3109,6 @@ async function downloadService(request, ctx) {
 }
 
 // src/service/proxy.js
-var BUFFER_CAP = 8 * 1024 * 1024;
 var MIN_CACHE_BYTES = 1024;
 var minSizeForKind = (kind) => kind === "nwm" || kind === "wm" ? 1e4 : 256;
 var REFERER = { douyin: "https://www.douyin.com/", tiktok: "https://www.tiktok.com/" };
@@ -3165,26 +3192,8 @@ async function proxyService(request, ctx) {
       throw new HTTPException(502, { message: `re-fetch failed for kind=${kind}` });
     }
   }
-  if (!bucket) {
-    return withDisposition(wrapMedia(upstream, contentType, "upstream-plain"), download, await filenameFor(raw), extHint);
-  }
-  const cl = Number(upstream.headers.get("content-length") || 0);
-  if (cl > BUFFER_CAP) {
-    return withDisposition(teeIntoCache(bucket, ctx, key, upstream, contentType), download, await filenameFor(raw), extHint);
-  }
-  const buf = await upstream.arrayBuffer();
-  const size = buf.byteLength;
-  if (size >= MIN_CACHE_BYTES && ctx?.waitUntil) {
-    ctx.waitUntil(r2PutRetry(bucket, key, () => new Response(buf).body, { httpMetadata: { contentType } }, 2));
-  }
-  const out = new Headers({
-    "content-type": contentType,
-    "content-length": String(size),
-    "accept-ranges": "bytes",
-    "cache-control": "public, max-age=300",
-    "x-cache-source": "upstream-buffer"
-  });
-  return withDisposition(new Response(buf, { status: 200, headers: out }), download, await filenameFor(raw), extHint);
+  const streamed = bucket ? teeIntoCache(bucket, ctx, key, upstream, contentType, { minCacheBytes: MIN_CACHE_BYTES }) : wrapMedia(upstream, contentType, "upstream-plain");
+  return withDisposition(streamed, download, await filenameFor(raw), extHint);
 }
 function looksLikeMedia(resp, kind, isRange, usedUrl) {
   if (!resp.ok || !resp.body) return false;
@@ -3199,12 +3208,12 @@ function looksLikeMedia(resp, kind, isRange, usedUrl) {
 }
 function wrapMedia(upstream, contentType, source) {
   const out = new Headers();
-  out.set("content-type", upstream.headers.get("content-type") || contentType || "application/octet-stream");
+  out.set("content-type", contentType || upstream.headers.get("content-type") || "application/octet-stream");
   const cl = upstream.headers.get("content-length");
   if (cl) out.set("content-length", cl);
   const cr = upstream.headers.get("content-range");
   if (cr) out.set("content-range", cr);
-  out.set("accept-ranges", upstream.headers.get("accept-ranges") || "bytes");
+  out.set("accept-ranges", "bytes");
   out.set("cache-control", "public, max-age=300");
   out.set("x-cache-source", source);
   return new Response(upstream.body, { status: upstream.status, headers: out });
@@ -3920,6 +3929,14 @@ h2{font-size:15px;margin:34px 0 6px;font-family:var(--serif);letter-spacing:.04e
 svg{width:100%;height:220px;display:block}
 .hint{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:8px}
 .status{font-family:var(--mono);font-size:12px;color:var(--muted);margin:20px 2px}
+@keyframes skshine{0%{background-position:-200% 0}100%{background-position:200% 0}}
+.skel,.sk-line{background:linear-gradient(90deg,var(--panel2) 20%,#2d2936 50%,var(--panel2) 80%);background-size:200% 100%;animation:skshine 1.2s ease-in-out infinite}
+.sk-line{height:16px;border-radius:6px;margin:10px 0}
+.sk-title{height:26px;width:86%}
+.sk-mid{width:58%}
+.sk-short{width:36%}
+.sk-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+@media(prefers-reduced-motion:reduce){.skel,.sk-line{animation:none}}
 .cmts{display:flex;flex-direction:column;gap:12px;margin-top:8px}
 .cmt{display:flex;gap:10px}
 .cmt img{width:32px;height:32px;border-radius:50%;object-fit:cover;background:#0e0d12;border:1px solid var(--line);flex:0 0 32px}
@@ -3937,7 +3954,17 @@ svg{width:100%;height:220px;display:block}
     <p class=eyebrow>\u4F5C\u54C1\u6570\u636E\u5206\u6790</p>
     <a class=back href="/discover">\u2190 \u53D1\u73B0</a>
   </div>
-  <div id=app><p class=status>\u52A0\u8F7D\u4E2D\u2026</p></div>
+  <div id=app aria-busy=true>
+    <div class=head>
+      <div class="frame skel"></div>
+      <div class=meta>
+        <div class="sk-line sk-title"></div>
+        <div class="sk-line sk-mid"></div>
+        <div class="sk-line sk-short"></div>
+      </div>
+    </div>
+    <p class="status sk-sr">\u52A0\u8F7D\u4E2D\u2026</p>
+  </div>
 </main>
 <script>
 (function(){
@@ -3982,12 +4009,15 @@ svg{width:100%;height:220px;display:block}
     return legend+svg+axis
   }
 
+  function commentsUrl(p,vid){return '/api/comments?platform='+encodeURIComponent(p)+'&id='+encodeURIComponent(vid)+'&limit=30'}
   async function load(){
     if(!platform||!id){$('#app').innerHTML='<p class=status>\u7F3A\u5C11 platform / id</p>';return}
+    var commentsP=fetch(commentsUrl(platform,id)).then(function(r){return r.json()}).catch(function(e){return {__err:e}})
     try{
       var r=await fetch('/api/work?platform='+encodeURIComponent(platform)+'&id='+encodeURIComponent(id))
       if(r.status!==200){var j=await r.json().catch(function(){return{}});$('#app').innerHTML='<p class=status>'+(j.message||('HTTP '+r.status))+'</p>';return}
       var d=await r.json();render(d)
+      fillComments(await commentsP)
     }catch(e){$('#app').innerHTML='<p class=status>\u52A0\u8F7D\u5931\u8D25\uFF1A'+e.message+'</p>'}
   }
   function withFlag(href,flag){if(!href)return href;return href+(href.indexOf('?')>-1?'&':'?')+flag}
@@ -4017,30 +4047,40 @@ svg{width:100%;height:220px;display:block}
     if(w>=h)frame.classList.add('is-h');else frame.classList.remove('is-h')
   }
   function clickToPlay(frame,cover,playUrl,w,h){
+    var started=false
+    function startPlay(){
+      if(started)return
+      started=true
+      frame.style.cursor=''
+      frame.innerHTML=''
+      var v=document.createElement('video')
+      v.controls=true;v.autoplay=true;v.preload='metadata'
+      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
+      if(cover)v.poster=cover
+      var src=document.createElement('source')
+      src.src=playUrl;src.type='video/mp4'
+      v.appendChild(src)
+      v.addEventListener('playing',function(){v.preload='auto'})
+      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
+      frame.appendChild(v)
+      var p=v.play();if(p&&p.catch)p.catch(function(){})
+    }
     applyAspect(frame,w,h)
     if(cover){var im=el('img');im.src=cover;im.alt='\u9884\u89C8';frame.appendChild(im)}
     frame.appendChild(el('span','playhint','\u25B6'))
     frame.style.cursor='pointer'
-    frame.addEventListener('click',function start(){
-      frame.removeEventListener('click',start)
-      frame.innerHTML=''
-      var v=document.createElement('video');v.controls=true;v.autoplay=true;v.preload='metadata'
-      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
-      if(cover)v.poster=cover
-      v.src=playUrl
-      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
-      frame.appendChild(v)
-      var p=v.play();if(p&&p.catch)p.catch(function(){})
-    })
+    frame.addEventListener('click',startPlay)
+    return startPlay
   }
   function render(d){
     var w=d.work||{},au=d.author||{},hist=d.history||[]
     var extra=w.extra||{}
-    var app=$('#app');app.innerHTML=''
+    var app=$('#app');app.innerHTML='';app.setAttribute('aria-busy','false')
     var head=el('div','head')
     var frame=el('div','frame')
     var vw=extra.width,vh=extra.height
-    if(w.play){clickToPlay(frame,w.cover,w.play,vw,vh)}
+    var startPlay=null
+    if(w.play){startPlay=clickToPlay(frame,w.cover,w.play,vw,vh)}
     else if(w.cover){var im=el('img');im.src=w.cover;im.addEventListener('load',function(){if(im.naturalWidth&&im.naturalHeight)applyAspect(frame,im.naturalWidth,im.naturalHeight)});frame.appendChild(im)}
     head.appendChild(frame)
     var meta=el('div','meta')
@@ -4060,6 +4100,7 @@ svg{width:100%;height:220px;display:block}
     if(Array.isArray(w.parts)&&w.parts.length>1)meta.appendChild(el('div','facts','\u5206P '+w.parts.length+' \u4E2A'))
     if(Array.isArray(w.tags)&&w.tags.length){var tg=el('div','chips');w.tags.slice(0,15).forEach(function(t){var c=el('a','chip','#'+t);c.href='/search?q='+encodeURIComponent(t);tg.appendChild(c)});meta.appendChild(tg)}
     var acts=el('div','acts')
+    if(startPlay){var pb=el('button','btn','\u76F4\u63A5\u64AD\u653E');pb.addEventListener('click',function(){startPlay()});acts.appendChild(pb)}
     var go=el('a','btn go','\u91CD\u65B0\u89E3\u6790(\u52A0\u4E00\u4E2A\u6570\u636E\u70B9)');go.href='/?u='+encodeURIComponent(w.original_url||'');acts.appendChild(go)
     if(w.original_url){var o=el('a','btn','\u539F\u94FE');o.href=w.original_url;o.target='_blank';o.rel='noopener';acts.appendChild(o)}
     var dlHref=w.play
@@ -4088,27 +4129,24 @@ svg{width:100%;height:220px;display:block}
     // comments
     app.appendChild(el('h2',null,'\u70ED\u95E8\u8BC4\u8BBA'))
     var cm=el('div','cmts');cm.id='cmts';cm.appendChild(el('div','hint','\u52A0\u8F7D\u4E2D\u2026'));app.appendChild(cm)
-    loadComments(w.platform,w.video_id)
   }
-  async function loadComments(platform,id){
+  function fillComments(j){
     var box=$('#cmts');if(!box)return
-    try{
-      var r=await fetch('/api/comments?platform='+encodeURIComponent(platform)+'&id='+encodeURIComponent(id)+'&limit=30')
-      var j=await r.json();var rows=j.data||[]
-      box.innerHTML=''
-      if(!rows.length){box.appendChild(el('div','hint','\u6682\u65E0\u8BC4\u8BBA\uFF08\u6216\u6B63\u5728\u6293\u53D6\uFF0C\u7A0D\u540E\u5237\u65B0\uFF09'));return}
-      function cmt(c){
-        var it=el('div','cmt')
-        if(c.avatar){var im=el('img');im.referrerPolicy='no-referrer';im.src=c.avatar;im.loading='lazy';it.appendChild(im)}
-        var b=el('div','cb')
-        b.appendChild(el('div','ca',c.author||'\u533F\u540D'))
-        b.appendChild(el('div','ct',c.text||''))
-        b.appendChild(el('div','cm','\u8D5E '+fmt(c.likes)+(c.ctime?(' \xB7 '+datestr(c.ctime)):'')))
-        if(c.replies&&c.replies.length){var rep=el('div','creps');c.replies.forEach(function(s){rep.appendChild(cmt(s))});b.appendChild(rep)}
-        it.appendChild(b);return it
-      }
-      rows.forEach(function(c){box.appendChild(cmt(c))})
-    }catch(e){box.innerHTML='<div class=hint>\u8BC4\u8BBA\u52A0\u8F7D\u5931\u8D25\uFF1A'+e.message+'</div>'}
+    if(j&&j.__err){box.innerHTML='<div class=hint>\u8BC4\u8BBA\u52A0\u8F7D\u5931\u8D25\uFF1A'+j.__err.message+'</div>';return}
+    var rows=(j&&j.data)||[]
+    box.innerHTML=''
+    if(!rows.length){box.appendChild(el('div','hint','\u6682\u65E0\u8BC4\u8BBA\uFF08\u6216\u6B63\u5728\u6293\u53D6\uFF0C\u7A0D\u540E\u5237\u65B0\uFF09'));return}
+    function cmt(c){
+      var it=el('div','cmt')
+      if(c.avatar){var im=el('img');im.referrerPolicy='no-referrer';im.src=c.avatar;im.loading='lazy';it.appendChild(im)}
+      var b=el('div','cb')
+      b.appendChild(el('div','ca',c.author||'\u533F\u540D'))
+      b.appendChild(el('div','ct',c.text||''))
+      b.appendChild(el('div','cm','\u8D5E '+fmt(c.likes)+(c.ctime?(' \xB7 '+datestr(c.ctime)):'')))
+      if(c.replies&&c.replies.length){var rep=el('div','creps');c.replies.forEach(function(s){rep.appendChild(cmt(s))});b.appendChild(rep)}
+      it.appendChild(b);return it
+    }
+    rows.forEach(function(c){box.appendChild(cmt(c))})
   }
   load()
 })();
@@ -4766,23 +4804,31 @@ footer a{color:var(--muted)}
     if(w>=h)frame.classList.add('is-h');else frame.classList.remove('is-h')
   }
   function clickToPlay(frame,cover,playUrl,w,h){
+    var started=false
+    function startPlay(){
+      if(started)return
+      started=true
+      frame.style.cursor=''
+      frame.innerHTML=''
+      var v=el('video');v.controls=true;v.autoplay=true;v.playsInline=true;v.preload='metadata'
+      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
+      if(cover)v.poster=cover
+      var src=document.createElement('source')
+      src.src=playUrl;src.type='video/mp4'
+      v.appendChild(src)
+      v.addEventListener('playing',function(){v.preload='auto'})
+      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
+      frame.appendChild(v)
+      frame.appendChild(el('span','badge','\u89C6\u9891'))
+      var p=v.play();if(p&&p.catch)p.catch(function(){})
+    }
     applyAspect(frame,w,h)
     var im=el('img');im.src=cover||'';im.alt='\u9884\u89C8';im.loading='lazy'
     frame.appendChild(im)
     frame.appendChild(el('span','playhint','\u25B6'))
     frame.style.cursor='pointer'
-    frame.addEventListener('click',function start(){
-      frame.removeEventListener('click',start)
-      frame.innerHTML=''
-      var v=el('video');v.controls=true;v.autoplay=true;v.playsInline=true;v.preload='metadata'
-      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
-      if(cover)v.poster=cover
-      v.src=playUrl
-      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
-      frame.appendChild(v)
-      frame.appendChild(el('span','badge','\u89C6\u9891'))
-      var p=v.play();if(p&&p.catch)p.catch(function(){})
-    })
+    frame.addEventListener('click',startPlay)
+    return startPlay
   }
   function stat(label,n){var w=el('span','stat');w.appendChild(el('b',null,fmt(n)));w.appendChild(el('i',null,label));return w}
 
@@ -4795,8 +4841,9 @@ footer a{color:var(--muted)}
     var firstImg=(d.image_data&&(d.image_data.no_watermark_image_list||[])[0])||''
     var vw=d.video_data&&d.video_data.width,vh=d.video_data&&d.video_data.height
     var playUrl=d.video_data&&(d.video_data.nwm_video_url_HQ||d.video_data.nwm_video_url)
+    var startPlay=null
     if(d.type==='video'&&playUrl){
-      clickToPlay(frame,cover,playUrl,vw,vh)
+      startPlay=clickToPlay(frame,cover,playUrl,vw,vh)
     }else{
       var im0=el('img');im0.src=cover||firstImg;im0.alt='\u9884\u89C8';im0.loading='lazy'
       im0.addEventListener('load',function(){if(im0.naturalWidth&&im0.naturalHeight)applyAspect(frame,im0.naturalWidth,im0.naturalHeight)})
@@ -4815,6 +4862,7 @@ footer a{color:var(--muted)}
 
     var acts=el('div','acts')
     if(d.type==='video'&&playUrl){
+      if(startPlay){var pb=el('button','btn ghost','\u76F4\u63A5\u64AD\u653E');pb.addEventListener('click',function(){startPlay()});acts.appendChild(pb)}
       acts.appendChild(dlBtn(playUrl,'\u4E0B\u8F7D'))
       acts.appendChild(copyBtn(playUrl,'\u590D\u5236\u76F4\u94FE'))
     }

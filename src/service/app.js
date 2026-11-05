@@ -218,23 +218,31 @@ footer a{color:var(--muted)}
     if(w>=h)frame.classList.add('is-h');else frame.classList.remove('is-h')
   }
   function clickToPlay(frame,cover,playUrl,w,h){
+    var started=false
+    function startPlay(){
+      if(started)return
+      started=true
+      frame.style.cursor=''
+      frame.innerHTML=''
+      var v=el('video');v.controls=true;v.autoplay=true;v.playsInline=true;v.preload='metadata'
+      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
+      if(cover)v.poster=cover
+      var src=document.createElement('source')
+      src.src=playUrl;src.type='video/mp4'
+      v.appendChild(src)
+      v.addEventListener('playing',function(){v.preload='auto'})
+      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
+      frame.appendChild(v)
+      frame.appendChild(el('span','badge','视频'))
+      var p=v.play();if(p&&p.catch)p.catch(function(){})
+    }
     applyAspect(frame,w,h)
     var im=el('img');im.src=cover||'';im.alt='预览';im.loading='lazy'
     frame.appendChild(im)
     frame.appendChild(el('span','playhint','▶'))
     frame.style.cursor='pointer'
-    frame.addEventListener('click',function start(){
-      frame.removeEventListener('click',start)
-      frame.innerHTML=''
-      var v=el('video');v.controls=true;v.autoplay=true;v.playsInline=true;v.preload='metadata'
-      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
-      if(cover)v.poster=cover
-      v.src=playUrl
-      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
-      frame.appendChild(v)
-      frame.appendChild(el('span','badge','视频'))
-      var p=v.play();if(p&&p.catch)p.catch(function(){})
-    })
+    frame.addEventListener('click',startPlay)
+    return startPlay
   }
   function stat(label,n){var w=el('span','stat');w.appendChild(el('b',null,fmt(n)));w.appendChild(el('i',null,label));return w}
 
@@ -247,8 +255,9 @@ footer a{color:var(--muted)}
     var firstImg=(d.image_data&&(d.image_data.no_watermark_image_list||[])[0])||''
     var vw=d.video_data&&d.video_data.width,vh=d.video_data&&d.video_data.height
     var playUrl=d.video_data&&(d.video_data.nwm_video_url_HQ||d.video_data.nwm_video_url)
+    var startPlay=null
     if(d.type==='video'&&playUrl){
-      clickToPlay(frame,cover,playUrl,vw,vh)
+      startPlay=clickToPlay(frame,cover,playUrl,vw,vh)
     }else{
       var im0=el('img');im0.src=cover||firstImg;im0.alt='预览';im0.loading='lazy'
       im0.addEventListener('load',function(){if(im0.naturalWidth&&im0.naturalHeight)applyAspect(frame,im0.naturalWidth,im0.naturalHeight)})
@@ -267,6 +276,7 @@ footer a{color:var(--muted)}
 
     var acts=el('div','acts')
     if(d.type==='video'&&playUrl){
+      if(startPlay){var pb=el('button','btn ghost','直接播放');pb.addEventListener('click',function(){startPlay()});acts.appendChild(pb)}
       acts.appendChild(dlBtn(playUrl,'下载'))
       acts.appendChild(copyBtn(playUrl,'复制直链'))
     }

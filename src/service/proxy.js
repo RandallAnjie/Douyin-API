@@ -10,13 +10,9 @@
 import { HTTPException } from '../utils/http-exception.js'
 import { requireProxyAuth } from '../utils/auth.js'
 import { fetchRawById, mediaCandidates, toMinimal } from '../hybrid/crawler.js'
-import { serveFromR2, teeIntoCache, r2PutRetry, warmUrl, mediaKey, metaKey, getJson } from '../utils/r2cache.js'
+import { serveFromR2, teeIntoCache, warmUrl, mediaKey, metaKey, getJson } from '../utils/r2cache.js'
 import { isWatermarkUrl, downloadFilename, contentDispositionAttachment } from '../utils/media.js'
 
-// Media at or under this is buffered so the R2 write can retry from
-// memory (the plane PUT 502s intermittently). A *known* larger body is
-// streamed straight through without caching (don't relay+buffer 80 MB).
-const BUFFER_CAP = 8 * 1024 * 1024
 // Don't cache a body smaller than this — it's almost certainly an
 // upstream error page, not real media (guards against poisoning the
 // cache with e.g. a 16-byte body served forever after).
@@ -117,31 +113,14 @@ export async function proxyService (request, ctx) {
     }
   }
 
-  if (!bucket) {
-    return withDisposition(wrapMedia(upstream, contentType, 'upstream-plain'), download, await filenameFor(raw), extHint)
-  }
-
-  // Non-range cache miss — cache regardless of size. Large bodies stream
-  // + cache via tee (no full buffer in memory); smaller bodies buffer so
-  // the R2 put can retry. Either way it's best-effort and never blocks.
-  const cl = Number(upstream.headers.get('content-length') || 0)
-  if (cl > BUFFER_CAP) {
-    return withDisposition(teeIntoCache(bucket, ctx, key, upstream, contentType), download, await filenameFor(raw), extHint)
-  }
-
-  const buf = await upstream.arrayBuffer()
-  const size = buf.byteLength
-  if (size >= MIN_CACHE_BYTES && ctx?.waitUntil) {
-    ctx.waitUntil(r2PutRetry(bucket, key, () => new Response(buf).body, { httpMetadata: { contentType } }, 2))
-  }
-  const out = new Headers({
-    'content-type': contentType,
-    'content-length': String(size),
-    'accept-ranges': 'bytes',
-    'cache-control': 'public, max-age=300',
-    'x-cache-source': 'upstream-buffer'
-  })
-  return withDisposition(new Response(buf, { status: 200, headers: out }), download, await filenameFor(raw), extHint)
+  // Always stream the user branch immediately. Playback (and download)
+  // must not wait to buffer the whole upstream body — HTML5 <video>
+  // needs first byte + Range to start. R2 populate (retry / multipart)
+  // happens only on the teed cache branch.
+  const streamed = bucket
+    ? teeIntoCache(bucket, ctx, key, upstream, contentType, { minCacheBytes: MIN_CACHE_BYTES })
+    : wrapMedia(upstream, contentType, 'upstream-plain')
+  return withDisposition(streamed, download, await filenameFor(raw), extHint)
 }
 
 // Heuristic: does this response look like real media (vs an expired-link
@@ -161,10 +140,15 @@ function looksLikeMedia (resp, kind, isRange, usedUrl) {
 
 function wrapMedia (upstream, contentType, source) {
   const out = new Headers()
-  out.set('content-type', upstream.headers.get('content-type') || contentType || 'application/octet-stream')
-  const cl = upstream.headers.get('content-length'); if (cl) out.set('content-length', cl)
-  const cr = upstream.headers.get('content-range'); if (cr) out.set('content-range', cr)
-  out.set('accept-ranges', upstream.headers.get('accept-ranges') || 'bytes')
+  // Prefer the kind's known type (video/mp4, image/jpeg) so <video>
+  // can start progressively. Never forward Content-Encoding — it
+  // breaks byte-range scrubbing.
+  out.set('content-type', contentType || upstream.headers.get('content-type') || 'application/octet-stream')
+  const cl = upstream.headers.get('content-length')
+  if (cl) out.set('content-length', cl)
+  const cr = upstream.headers.get('content-range')
+  if (cr) out.set('content-range', cr)
+  out.set('accept-ranges', 'bytes')
   out.set('cache-control', 'public, max-age=300')
   out.set('x-cache-source', source)
   return new Response(upstream.body, { status: upstream.status, headers: out })

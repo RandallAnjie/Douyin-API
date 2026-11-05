@@ -69,6 +69,14 @@ h2{font-size:15px;margin:34px 0 6px;font-family:var(--serif);letter-spacing:.04e
 svg{width:100%;height:220px;display:block}
 .hint{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:8px}
 .status{font-family:var(--mono);font-size:12px;color:var(--muted);margin:20px 2px}
+@keyframes skshine{0%{background-position:-200% 0}100%{background-position:200% 0}}
+.skel,.sk-line{background:linear-gradient(90deg,var(--panel2) 20%,#2d2936 50%,var(--panel2) 80%);background-size:200% 100%;animation:skshine 1.2s ease-in-out infinite}
+.sk-line{height:16px;border-radius:6px;margin:10px 0}
+.sk-title{height:26px;width:86%}
+.sk-mid{width:58%}
+.sk-short{width:36%}
+.sk-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+@media(prefers-reduced-motion:reduce){.skel,.sk-line{animation:none}}
 .cmts{display:flex;flex-direction:column;gap:12px;margin-top:8px}
 .cmt{display:flex;gap:10px}
 .cmt img{width:32px;height:32px;border-radius:50%;object-fit:cover;background:#0e0d12;border:1px solid var(--line);flex:0 0 32px}
@@ -86,7 +94,17 @@ svg{width:100%;height:220px;display:block}
     <p class=eyebrow>作品数据分析</p>
     <a class=back href="/discover">← 发现</a>
   </div>
-  <div id=app><p class=status>加载中…</p></div>
+  <div id=app aria-busy=true>
+    <div class=head>
+      <div class="frame skel"></div>
+      <div class=meta>
+        <div class="sk-line sk-title"></div>
+        <div class="sk-line sk-mid"></div>
+        <div class="sk-line sk-short"></div>
+      </div>
+    </div>
+    <p class="status sk-sr">加载中…</p>
+  </div>
 </main>
 <script>
 (function(){
@@ -131,12 +149,15 @@ svg{width:100%;height:220px;display:block}
     return legend+svg+axis
   }
 
+  function commentsUrl(p,vid){return '/api/comments?platform='+encodeURIComponent(p)+'&id='+encodeURIComponent(vid)+'&limit=30'}
   async function load(){
     if(!platform||!id){$('#app').innerHTML='<p class=status>缺少 platform / id</p>';return}
+    var commentsP=fetch(commentsUrl(platform,id)).then(function(r){return r.json()}).catch(function(e){return {__err:e}})
     try{
       var r=await fetch('/api/work?platform='+encodeURIComponent(platform)+'&id='+encodeURIComponent(id))
       if(r.status!==200){var j=await r.json().catch(function(){return{}});$('#app').innerHTML='<p class=status>'+(j.message||('HTTP '+r.status))+'</p>';return}
       var d=await r.json();render(d)
+      fillComments(await commentsP)
     }catch(e){$('#app').innerHTML='<p class=status>加载失败：'+e.message+'</p>'}
   }
   function withFlag(href,flag){if(!href)return href;return href+(href.indexOf('?')>-1?'&':'?')+flag}
@@ -166,30 +187,40 @@ svg{width:100%;height:220px;display:block}
     if(w>=h)frame.classList.add('is-h');else frame.classList.remove('is-h')
   }
   function clickToPlay(frame,cover,playUrl,w,h){
+    var started=false
+    function startPlay(){
+      if(started)return
+      started=true
+      frame.style.cursor=''
+      frame.innerHTML=''
+      var v=document.createElement('video')
+      v.controls=true;v.autoplay=true;v.preload='metadata'
+      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
+      if(cover)v.poster=cover
+      var src=document.createElement('source')
+      src.src=playUrl;src.type='video/mp4'
+      v.appendChild(src)
+      v.addEventListener('playing',function(){v.preload='auto'})
+      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
+      frame.appendChild(v)
+      var p=v.play();if(p&&p.catch)p.catch(function(){})
+    }
     applyAspect(frame,w,h)
     if(cover){var im=el('img');im.src=cover;im.alt='预览';frame.appendChild(im)}
     frame.appendChild(el('span','playhint','▶'))
     frame.style.cursor='pointer'
-    frame.addEventListener('click',function start(){
-      frame.removeEventListener('click',start)
-      frame.innerHTML=''
-      var v=document.createElement('video');v.controls=true;v.autoplay=true;v.preload='metadata'
-      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
-      if(cover)v.poster=cover
-      v.src=playUrl
-      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
-      frame.appendChild(v)
-      var p=v.play();if(p&&p.catch)p.catch(function(){})
-    })
+    frame.addEventListener('click',startPlay)
+    return startPlay
   }
   function render(d){
     var w=d.work||{},au=d.author||{},hist=d.history||[]
     var extra=w.extra||{}
-    var app=$('#app');app.innerHTML=''
+    var app=$('#app');app.innerHTML='';app.setAttribute('aria-busy','false')
     var head=el('div','head')
     var frame=el('div','frame')
     var vw=extra.width,vh=extra.height
-    if(w.play){clickToPlay(frame,w.cover,w.play,vw,vh)}
+    var startPlay=null
+    if(w.play){startPlay=clickToPlay(frame,w.cover,w.play,vw,vh)}
     else if(w.cover){var im=el('img');im.src=w.cover;im.addEventListener('load',function(){if(im.naturalWidth&&im.naturalHeight)applyAspect(frame,im.naturalWidth,im.naturalHeight)});frame.appendChild(im)}
     head.appendChild(frame)
     var meta=el('div','meta')
@@ -209,6 +240,7 @@ svg{width:100%;height:220px;display:block}
     if(Array.isArray(w.parts)&&w.parts.length>1)meta.appendChild(el('div','facts','分P '+w.parts.length+' 个'))
     if(Array.isArray(w.tags)&&w.tags.length){var tg=el('div','chips');w.tags.slice(0,15).forEach(function(t){var c=el('a','chip','#'+t);c.href='/search?q='+encodeURIComponent(t);tg.appendChild(c)});meta.appendChild(tg)}
     var acts=el('div','acts')
+    if(startPlay){var pb=el('button','btn','直接播放');pb.addEventListener('click',function(){startPlay()});acts.appendChild(pb)}
     var go=el('a','btn go','重新解析(加一个数据点)');go.href='/?u='+encodeURIComponent(w.original_url||'');acts.appendChild(go)
     if(w.original_url){var o=el('a','btn','原链');o.href=w.original_url;o.target='_blank';o.rel='noopener';acts.appendChild(o)}
     var dlHref=w.play
@@ -237,27 +269,24 @@ svg{width:100%;height:220px;display:block}
     // comments
     app.appendChild(el('h2',null,'热门评论'))
     var cm=el('div','cmts');cm.id='cmts';cm.appendChild(el('div','hint','加载中…'));app.appendChild(cm)
-    loadComments(w.platform,w.video_id)
   }
-  async function loadComments(platform,id){
+  function fillComments(j){
     var box=$('#cmts');if(!box)return
-    try{
-      var r=await fetch('/api/comments?platform='+encodeURIComponent(platform)+'&id='+encodeURIComponent(id)+'&limit=30')
-      var j=await r.json();var rows=j.data||[]
-      box.innerHTML=''
-      if(!rows.length){box.appendChild(el('div','hint','暂无评论（或正在抓取，稍后刷新）'));return}
-      function cmt(c){
-        var it=el('div','cmt')
-        if(c.avatar){var im=el('img');im.referrerPolicy='no-referrer';im.src=c.avatar;im.loading='lazy';it.appendChild(im)}
-        var b=el('div','cb')
-        b.appendChild(el('div','ca',c.author||'匿名'))
-        b.appendChild(el('div','ct',c.text||''))
-        b.appendChild(el('div','cm','赞 '+fmt(c.likes)+(c.ctime?(' · '+datestr(c.ctime)):'')))
-        if(c.replies&&c.replies.length){var rep=el('div','creps');c.replies.forEach(function(s){rep.appendChild(cmt(s))});b.appendChild(rep)}
-        it.appendChild(b);return it
-      }
-      rows.forEach(function(c){box.appendChild(cmt(c))})
-    }catch(e){box.innerHTML='<div class=hint>评论加载失败：'+e.message+'</div>'}
+    if(j&&j.__err){box.innerHTML='<div class=hint>评论加载失败：'+j.__err.message+'</div>';return}
+    var rows=(j&&j.data)||[]
+    box.innerHTML=''
+    if(!rows.length){box.appendChild(el('div','hint','暂无评论（或正在抓取，稍后刷新）'));return}
+    function cmt(c){
+      var it=el('div','cmt')
+      if(c.avatar){var im=el('img');im.referrerPolicy='no-referrer';im.src=c.avatar;im.loading='lazy';it.appendChild(im)}
+      var b=el('div','cb')
+      b.appendChild(el('div','ca',c.author||'匿名'))
+      b.appendChild(el('div','ct',c.text||''))
+      b.appendChild(el('div','cm','赞 '+fmt(c.likes)+(c.ctime?(' · '+datestr(c.ctime)):'')))
+      if(c.replies&&c.replies.length){var rep=el('div','creps');c.replies.forEach(function(s){rep.appendChild(cmt(s))});b.appendChild(rep)}
+      it.appendChild(b);return it
+    }
+    rows.forEach(function(c){box.appendChild(cmt(c))})
   }
   load()
 })();

@@ -80,32 +80,62 @@ export async function serveFromR2 (bucket, request, key, contentType, minSize = 
   })
 }
 
-// Tee an upstream Response into the user branch + an R2 put (scheduled
-// on waitUntil so it survives the client disconnecting).
-export function teeIntoCache (bucket, ctx, key, upstreamResponse, contentType) {
-  if (!bucket || !upstreamResponse.ok || !upstreamResponse.body) return upstreamResponse
-  const finalType = contentType || upstreamResponse.headers.get('content-type') || 'application/octet-stream'
-  const lenHeader = upstreamResponse.headers.get('content-length')
-  const total = lenHeader && /^\d+$/.test(lenHeader) ? Number(lenHeader) : null
-
-  let userBranch, r2Branch
-  try { [userBranch, r2Branch] = upstreamResponse.body.tee() } catch { return upstreamResponse }
-
-  // Large bodies exceed the single-PUT body cap → multipart. Small ones
-  // (or unknown length) use a plain put.
-  const put = (total != null && total > PART_SIZE)
-    ? r2PutMultipart(bucket, key, r2Branch, { httpMetadata: { contentType: finalType } })
-    : bucket.put(key, r2Branch, { httpMetadata: { contentType: finalType } })
-      .catch((e) => { try { console.error('[r2] put failed', key, e?.message || e) } catch {} })
-  if (ctx?.waitUntil) ctx.waitUntil(put)
-
+function streamMediaResponse (body, status, contentType, total, source) {
   const out = new Headers()
-  out.set('content-type', finalType)
+  out.set('content-type', contentType || 'application/octet-stream')
   if (total != null) out.set('content-length', String(total))
   out.set('accept-ranges', 'bytes')
   out.set('cache-control', 'public, max-age=300')
-  out.set('x-cache-source', 'upstream-tee')
-  return new Response(userBranch, { status: upstreamResponse.status, headers: out })
+  out.set('x-cache-source', source)
+  return new Response(body, { status, headers: out })
+}
+
+// Tee an upstream Response into the user branch + an R2 put. The user
+// branch is returned immediately (first byte is not held for the put).
+// R2 retries / multipart / small-body buffering happen only on the
+// cache branch via waitUntil.
+export function teeIntoCache (bucket, ctx, key, upstreamResponse, contentType, opts = {}) {
+  const finalType = contentType || upstreamResponse?.headers?.get('content-type') || 'application/octet-stream'
+  const lenHeader = upstreamResponse?.headers?.get('content-length')
+  const total = lenHeader && /^\d+$/.test(lenHeader) ? Number(lenHeader) : null
+  const minCacheBytes = Number(opts.minCacheBytes) || 0
+  const status = upstreamResponse?.status || 200
+
+  if (!bucket || !upstreamResponse?.ok || !upstreamResponse.body) {
+    return streamMediaResponse(upstreamResponse?.body || null, status, finalType, total, 'upstream-plain')
+  }
+
+  let userBranch, r2Branch
+  try { [userBranch, r2Branch] = upstreamResponse.body.tee() } catch {
+    return streamMediaResponse(upstreamResponse.body, status, finalType, total, 'upstream-plain')
+  }
+
+  const meta = { httpMetadata: { contentType: finalType } }
+  const put = (async () => {
+    try {
+      if (total != null && total < minCacheBytes) {
+        try { await r2Branch.cancel() } catch {}
+        return false
+      }
+      if (total != null && total > PART_SIZE) {
+        return r2PutMultipart(bucket, key, r2Branch, meta)
+      }
+      if (total != null) {
+        // Known small body: buffer the R2 branch only so put can retry.
+        const buf = await new Response(r2Branch).arrayBuffer()
+        if (buf.byteLength < minCacheBytes) return false
+        return r2PutRetry(bucket, key, () => new Response(buf).body, meta, 2)
+      }
+      // Unknown length: stream via multipart, no full-body buffer.
+      return r2PutMultipart(bucket, key, r2Branch, meta)
+    } catch (e) {
+      try { console.error('[r2] tee put failed', key, e?.message || e) } catch {}
+      return false
+    }
+  })()
+  if (ctx?.waitUntil) ctx.waitUntil(put)
+
+  return streamMediaResponse(userBranch, status, finalType, total, 'upstream-tee')
 }
 
 // Range MISS aside: user gets a Range upstream fetch now; a full-body
