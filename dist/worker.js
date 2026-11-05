@@ -2857,8 +2857,12 @@ async function getComments(ctx, platform, videoId, limit = 20, offset = 0) {
   }
 }
 async function rateLimitHit(ctx, ip, limit, windowSec) {
-  if (ctx.config.kv) return rateLimitKV(ctx.config.kv, ip, limit, windowSec);
-  if (ctx.config.d1) return rateLimitD1(ctx.config.d1, ip, limit, windowSec);
+  const cap = Number(limit);
+  if (!Number.isFinite(cap) || cap <= 0) {
+    return { allowed: true, count: 0, limit: 0 };
+  }
+  if (ctx.config.kv) return rateLimitKV(ctx.config.kv, ip, cap, windowSec);
+  if (ctx.config.d1) return rateLimitD1(ctx.config.d1, ip, cap, windowSec);
   return { allowed: false, reason: "no-store" };
 }
 async function rateLimitKV(kv, ip, limit, windowSec) {
@@ -5329,6 +5333,144 @@ footer a{color:var(--muted)}
 </body>
 </html>`;
 
+// src/service/shortcut.js
+var SHORTCUT_INSTALL_URL = "https://www.icloud.com/shortcuts/d8c029c7084e49f78fe9e7735a237ed3";
+async function shortcutService(request, ctx) {
+  const origin = proxyBase(request, ctx);
+  const html = PAGE7.split("{{ORIGIN}}").join(origin).split("{{INSTALL}}").join(SHORTCUT_INSTALL_URL);
+  return new Response(html, {
+    status: 200,
+    headers: { "content-type": "text/html; charset=utf-8" }
+  });
+}
+var PAGE7 = `<!doctype html>
+<html lang=zh>
+<head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>iOS \u5FEB\u6377\u6307\u4EE4 \xB7 \u6296\u97F3\u8F6C\u5206\u4EAB\u94FE\u63A5</title>
+<style>
+  body{font:15px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:780px;margin:40px auto;padding:0 20px;color:#1c1c1e;background:#fbfbfa}
+  h1{font-size:24px;margin-bottom:4px}
+  h2{font-size:17px;margin-top:32px;border-bottom:1px solid #e5e3df;padding-bottom:6px}
+  code{background:#f0eeea;padding:1px 5px;border-radius:4px;font-size:13px}
+  .route{margin:6px 0}
+  .m{display:inline-block;width:46px;font-weight:600;color:#8a6d3b}
+  small{color:#8a857c}
+  a{color:#3b6ea5}
+  ol{padding-left:22px}
+  li{margin:8px 0}
+  .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}
+  button{font:13px/1.4 inherit;background:#f0eeea;border:1px solid #e5e3df;border-radius:4px;padding:2px 8px;cursor:pointer;color:#3b6ea5}
+  button:hover{background:#e5e3df}
+  textarea{width:100%;min-height:88px;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;border:1px solid #e5e3df;border-radius:4px;padding:8px;box-sizing:border-box}
+  pre.out{background:#f0eeea;padding:10px 12px;border-radius:4px;white-space:pre-wrap;word-break:break-all;min-height:2.4em}
+</style></head>
+<body>
+<h1>\u6296\u97F3\u8F6C\u5206\u4EAB\u94FE\u63A5</h1>
+<small>\u7528 iOS\u300C\u5FEB\u6377\u6307\u4EE4\u300D\u628A\u6296\u97F3 App \u5206\u4EAB\u53E3\u4EE4\u8F6C\u6210\u672C\u7AD9\u94FE\u63A5\uFF0C\u53D1\u7ED9\u5FAE\u4FE1 / \u4FE1\u606F\u91CC\u7684\u670B\u53CB\u3002\u63A8\u8350\u76F4\u63A5\u6DFB\u52A0\u73B0\u6210\u6307\u4EE4\uFF1B\u4E0D\u60F3\u7528\u73B0\u6210\u7684\u53EF\u4EE5\u6309\u4E0B\u9762\u624B\u5EFA\u3002</small>
+
+<h2>\u4E00\u952E\u6DFB\u52A0\u5FEB\u6377\u6307\u4EE4</h2>
+<p>\u63A8\u8350\uFF1A\u70B9\u4E0B\u9762\u6253\u5F00 iCloud\uFF0C\u786E\u8BA4\u540E\u5373\u53EF\u6DFB\u52A0\u5230\u300C\u5FEB\u6377\u6307\u4EE4\u300D\u3002\u4E0D\u7528\u81EA\u5DF1\u642D\u6B65\u9AA4\u3002</p>
+<div class=row>
+  <a href="{{INSTALL}}" target="_blank" rel="noopener">\u4E00\u952E\u6DFB\u52A0\u5FEB\u6377\u6307\u4EE4</a>
+  <button type=button data-copy="{{INSTALL}}">\u590D\u5236\u94FE\u63A5</button>
+</div>
+
+<h2>\u4E0D\u60F3\u7528\u73B0\u6210\u7684\uFF1F\u624B\u52A8\u642D\u5EFA</h2>
+<p>\u4E0B\u9762\u7EA6 5 \u6B65\uFF0C\u5728\u300C\u5FEB\u6377\u6307\u4EE4\u300D\u91CC\u624B\u5EFA\u540C\u4E00\u6761\u6307\u4EE4\u3002</p>
+
+<h2>1. \u65B0\u5EFA\u5FEB\u6377\u6307\u4EE4</h2>
+<ol>
+  <li>\u6253\u5F00\u300C\u5FEB\u6377\u6307\u4EE4\u300DApp \u2192 \u53F3\u4E0A\u89D2\u300C+\u300D\u65B0\u5EFA\u3002</li>
+  <li>\u540D\u79F0\u586B <code>\u6296\u97F3\u8F6C\u5206\u4EAB\u94FE\u63A5</code>\u3002</li>
+  <li>\u53F3\u4E0A\u89D2 \u24D8 \u2192 \u6253\u5F00\u300C\u5728\u5206\u4EAB\u8868\u5355\u4E2D\u663E\u793A\u300D\u3002\u63A5\u53D7\u7684\u7C7B\u578B\u52FE\u9009 <code>URL</code>\u3001<code>\u6587\u672C</code>\uFF0C\u4EE5\u53CA Safari\u300C\u7F51\u9875\u300D\uFF08\u6709\u5219\u52FE\u4E0A\uFF09\u3002</li>
+</ol>
+
+<h2>2. \u4ECE\u8F93\u5165\u53D6\u6587\u672C</h2>
+<p>\u6DFB\u52A0\u64CD\u4F5C <code>\u83B7\u53D6\u8F93\u5165\u7684\u6587\u672C</code>\uFF08Get Text from Input\uFF09\uFF0C\u8F93\u5165\u6765\u6E90\u9009 <code>\u5FEB\u6377\u6307\u4EE4\u8F93\u5165</code>\uFF08Shortcut Input\uFF09\u3002\u6296\u97F3\u5206\u4EAB\u8868\u5355\u7ED9\u7684\u662F\u4E00\u6574\u6BB5\u53E3\u4EE4\uFF0C\u8FD9\u4E00\u6B65\u628A\u5B83\u6536\u6210\u7EAF\u6587\u672C\u3002</p>
+
+<h2>3. \u8BF7\u6C42\u672C\u7AD9\u63A5\u53E3</h2>
+<p>\u6DFB\u52A0\u64CD\u4F5C <code>\u83B7\u53D6 URL \u5185\u5BB9</code>\uFF08Get Contents of URL\uFF09\uFF1A</p>
+<ul>
+  <li>URL\uFF08\u63A8\u8350 POST\uFF0C\u53E3\u4EE4\u91CC\u7684\u4E2D\u6587\u4E0D\u7528\u81EA\u5DF1\u7F16\u7801\uFF09\uFF1A</li>
+</ul>
+<div class=row>
+  <code id=posturl>{{ORIGIN}}/api/share?format=text&amp;text_full=1</code>
+  <button type=button data-copy="{{ORIGIN}}/api/share?format=text&text_full=1">\u590D\u5236</button>
+</div>
+<ul>
+  <li>\u65B9\u6CD5\uFF1A<code>POST</code></li>
+  <li>\u8BF7\u6C42\u4F53\uFF1A<code>\u6587\u4EF6</code> / <code>\u6587\u672C</code>\uFF0C\u5185\u5BB9\u9009\u4E0A\u4E00\u6B65\u7684\u6587\u672C\u3002</li>
+  <li>\u4E00\u822C\u4E0D\u7528\u52A0 <code>token</code>\u3002\u53EA\u6709\u7AD9\u70B9\u7BA1\u7406\u5458\u6253\u5F00\u4E86\u6E38\u5BA2\u9650\u6D41\u65F6\uFF0C\u624D\u9700\u8981\u628A <code>&amp;token=\u4F60\u7684\u94A5\u5319</code> \u63A5\u5230 URL \u540E\u9762\u3002</li>
+</ul>
+<p>GET \u5199\u6CD5\uFF08\u5148\u52A0\u4E00\u6B65 <code>URL \u7F16\u7801</code>\uFF0C\u518D\u62FC\u5230 <code>text=</code> \u540E\u9762\uFF09\uFF1A</p>
+<div class=row>
+  <code id=geturl>{{ORIGIN}}/api/share?format=text&amp;text_full=1&amp;text=</code>
+  <button type=button data-copy="{{ORIGIN}}/api/share?format=text&text_full=1&text=">\u590D\u5236 GET \u524D\u7F00</button>
+</div>
+<p><small><code>text_full=1</code> \u4F1A\u5C3D\u91CF\u56DE\u300C\u6807\u9898 - @\u4F5C\u8005\u300D\u52A0\u6362\u884C\u518D\u52A0\u94FE\u63A5\uFF0C\u65B9\u4FBF\u76F4\u63A5\u8F6C\u53D1\u7ED9\u670B\u53CB\uFF1B\u89E3\u6790\u8D85\u8FC7\u7EA6 8 \u79D2\u5219\u53EA\u56DE\u94FE\u63A5\u3002</small></p>
+
+<h2>4. \u590D\u5236\u5230\u526A\u8D34\u677F</h2>
+<p>\u6DFB\u52A0\u64CD\u4F5C <code>\u62F7\u8D1D\u5230\u526A\u8D34\u677F</code>\uFF08Copy to Clipboard\uFF09\uFF0C\u5185\u5BB9\u4E3A\u4E0A\u4E00\u6B65\u7684\u54CD\u5E94\u3002</p>
+
+<h2>5. \u5206\u4EAB\u7ED9\u670B\u53CB</h2>
+<p>\u518D\u6DFB\u52A0 <code>\u5206\u4EAB</code>\uFF08Share\uFF09\uFF0C\u6216 <code>\u663E\u793A\u901A\u77E5</code>\uFF08Show Notification\uFF09\u3002\u5206\u4EAB\u4F1A\u5F39\u51FA\u7CFB\u7EDF\u5206\u4EAB\u8868\uFF0C\u53EF\u9009\u5FAE\u4FE1 / \u4FE1\u606F / \u5907\u5FD8\u5F55\u3002</p>
+
+<h2>\u53D8\u4F53\uFF1A\u76F4\u63A5\u6253\u5F00\u4F5C\u54C1\u9875</h2>
+<p>\u628A\u7B2C 3 \u6B65\u7684 <code>text_full=1</code> \u53BB\u6389\uFF08\u53EA\u8981\u4E00\u884C\u94FE\u63A5\uFF09\uFF0C\u7B2C 5 \u6B65\u6539\u6210 <code>\u6253\u5F00 URL</code>\uFF08Open URLs\uFF09\u3002\u6216\u5BF9\u4E0B\u9762\u8FD9\u4E2A\u5730\u5740\u505A GET\uFF0C\u6D4F\u89C8\u5668\u4F1A 302 \u5230 <code>/work</code>\uFF1A</p>
+<div class=row>
+  <code>{{ORIGIN}}/api/share?format=redirect&amp;text=</code>
+  <button type=button data-copy="{{ORIGIN}}/api/share?format=redirect&text=">\u590D\u5236</button>
+</div>
+
+<h2>\u4ECE\u6296\u97F3\u91CC\u600E\u4E48\u70B9</h2>
+<ol>
+  <li>\u6296\u97F3 App \u6253\u5F00\u4E00\u6761\u4F5C\u54C1 \u2192 <code>\u5206\u4EAB</code> \u2192 <code>\u66F4\u591A</code> \u2192 <code>\u5FEB\u6377\u6307\u4EE4</code> \u2192 <code>\u6296\u97F3\u8F6C\u5206\u4EAB\u94FE\u63A5</code>\u3002</li>
+  <li>\u8DD1\u5B8C\u540E\u9009\u4E00\u4E2A\u597D\u53CB\u53D1\u51FA\u53BB\u3002\u5BF9\u65B9\u6253\u5F00\u7684\u662F <code>{{ORIGIN}}/work?platform=douyin&amp;id=\u2026</code>\uFF0C\u4E0D\u662F\u6296\u97F3\u77ED\u94FE\u3002</li>
+</ol>
+<p>\u60F3\u5C11\u70B9\u4E24\u4E0B\uFF1A\u7CFB\u7EDF\u8BBE\u7F6E \u2192 \u8F85\u52A9\u529F\u80FD \u2192 \u89E6\u63A7 \u2192 <code>\u8F7B\u70B9\u80CC\u9762</code>\uFF08Back Tap\uFF09\u628A\u8FD9\u4E2A\u5FEB\u6377\u6307\u4EE4\u6302\u4E0A\uFF1B\u6216\u628A\u5FEB\u6377\u6307\u4EE4\u653E\u5230\u4E3B\u5C4F\u5E55\u5C0F\u7EC4\u4EF6\u3002</p>
+
+<h2>\u8BD5\u4E00\u4E0B</h2>
+<p>\u628A\u6296\u97F3\u5206\u4EAB\u53E3\u4EE4\u8D34\u8FDB\u6765\uFF0C\u8D70\u540C\u4E00\u4E2A <code>/api/share</code>\uFF08<code>format=text&amp;text_full=1</code>\uFF09\u3002</p>
+<textarea id=try placeholder="3.05 \u590D\u5236\u6253\u5F00\u6296\u97F3\uFF0C\u770B\u770B\u3010xxx\u7684\u4F5C\u54C1\u3011 \u2026 https://v.douyin.com/AbCdEf/ F@a.Bc 05/12"></textarea>
+<div class=row>
+  <button type=button id=go>\u8F6C\u6362</button>
+  <small>\u5931\u8D25\u65F6\u4E0B\u9762\u4F1A\u663E\u793A\u63A5\u53E3\u8FD4\u56DE\u7684\u539F\u6587\u3002</small>
+</div>
+<pre class=out id=out></pre>
+
+<p><small><a href="/">\u89E3\u6790\u53F0</a> \xB7 <a href="/docs">\u63A5\u53E3\u6587\u6863</a> \xB7 <a href="/hot">\u70ED\u699C</a></small></p>
+<script>
+(function(){
+  function copyText(t, btn){
+    var done=function(){if(!btn)return;var o=btn.textContent;btn.textContent='\u5DF2\u590D\u5236';setTimeout(function(){btn.textContent=o},1200)}
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(t).then(done,function(){})
+    }else{
+      var ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select()
+      try{document.execCommand('copy');done()}catch(e){}
+      document.body.removeChild(ta)
+    }
+  }
+  document.querySelectorAll('[data-copy]').forEach(function(btn){
+    btn.addEventListener('click',function(){copyText(btn.getAttribute('data-copy')||'',btn)})
+  })
+  var go=document.getElementById('go')
+  var box=document.getElementById('try')
+  var out=document.getElementById('out')
+  if(go)go.addEventListener('click',function(){
+    var text=box.value||''
+    out.textContent='\u8BF7\u6C42\u4E2D\u2026'
+    fetch('/api/share?format=text&text_full=1',{
+      method:'POST',
+      headers:{'content-type':'text/plain; charset=utf-8'},
+      body:text
+    }).then(function(r){return r.text().then(function(t){out.textContent=t})})
+     .catch(function(e){out.textContent=e.message||String(e)})
+  })
+})();
+</script>
+</body></html>`;
+
 // src/service/docs.js
 async function docsService(request, ctx) {
   const tokenSource = ctx.config.auth.tokenSource;
@@ -5339,7 +5481,7 @@ async function docsService(request, ctx) {
   });
 }
 function renderDocs(tokenSource) {
-  return DOCS_HTML.replace("{{TOKEN_SOURCE}}", tokenSource);
+  return DOCS_HTML.replace("{{TOKEN_SOURCE}}", tokenSource).replaceAll("{{INSTALL}}", SHORTCUT_INSTALL_URL);
 }
 var DOCS_HTML = `<!doctype html>
 <html lang=zh>
@@ -5407,7 +5549,7 @@ var DOCS_HTML = `<!doctype html>
 <div class=route><span class=m>GET</span> <code>/api/share?text=&format=text&text_full=0</code></div>
 <div class=route><span class=m>POST</span> <code>/api/share?format=text&text_full=1</code> <small>body: \u5206\u4EAB\u53E3\u4EE4\uFF08text/plain \u6216 form\uFF09</small></div>
 <small>
-\u4ECE\u6296\u97F3 / TikTok \u5206\u4EAB\u53E3\u4EE4\u91CC\u62BD\u51FA\u7B2C\u4E00\u6761 http(s) \u94FE\u63A5\uFF0C\u89E3\u6790 platform+id\uFF0C\u8FD4\u56DE\u672C\u7AD9 <code>/work?platform=&amp;id=</code>\u3002<code>format=text</code>\uFF08\u9ED8\u8BA4\uFF09\u53EA\u56DE\u4E00\u884C\u94FE\u63A5\uFF1B<code>text_full=1</code> \u56DE\u300C\u6807\u9898 - @\u4F5C\u8005\u300D\u52A0\u6362\u884C\u518D\u52A0\u94FE\u63A5\uFF1B<code>format=json</code> \u56DE platform/id/link/title/author/cover/play/download\uFF08\u5A92\u4F53\u4E3A\u4E0E\u70ED\u699C\u76F8\u540C\u7684\u540C\u57DF HMAC <code>/proxy</code>\uFF09\uFF1B<code>format=redirect</code> 302 \u5230\u4F5C\u54C1\u9875\u3002\u9274\u6743\u4E0E hybrid/video_data \u6E38\u5BA2\u89C4\u5219\u76F8\u540C\uFF08<code>?token=</code> \u4E0D\u9650\u6D41\uFF1B\u6E38\u5BA2\u9650\u6D41\u4E14\u4E0D\u8FD4\u56DE\u539F\u59CB JSON\uFF09\u3002id \u89E3\u6790\u5B8C\u5373\u54CD\u5E94\uFF0Cingest \u5728\u540E\u53F0\u8FDB\u884C\u3002<a href="/shortcut">iOS \u5FEB\u6377\u6307\u4EE4\u6559\u7A0B</a>
+\u4ECE\u6296\u97F3 / TikTok \u5206\u4EAB\u53E3\u4EE4\u91CC\u62BD\u51FA\u7B2C\u4E00\u6761 http(s) \u94FE\u63A5\uFF0C\u89E3\u6790 platform+id\uFF0C\u8FD4\u56DE\u672C\u7AD9 <code>/work?platform=&amp;id=</code>\u3002<code>format=text</code>\uFF08\u9ED8\u8BA4\uFF09\u53EA\u56DE\u4E00\u884C\u94FE\u63A5\uFF1B<code>text_full=1</code> \u56DE\u300C\u6807\u9898 - @\u4F5C\u8005\u300D\u52A0\u6362\u884C\u518D\u52A0\u94FE\u63A5\uFF1B<code>format=json</code> \u56DE platform/id/link/title/author/cover/play/download\uFF08\u5A92\u4F53\u4E3A\u4E0E\u70ED\u699C\u76F8\u540C\u7684\u540C\u57DF HMAC <code>/proxy</code>\uFF09\uFF1B<code>format=redirect</code> 302 \u5230\u4F5C\u54C1\u9875\u3002\u9274\u6743\u4E0E hybrid/video_data \u6E38\u5BA2\u89C4\u5219\u76F8\u540C\uFF08\u6E38\u5BA2\u4E0D\u8FD4\u56DE\u539F\u59CB JSON\uFF1B\u9ED8\u8BA4\u4E0D\u9650\u6D41\uFF0C\u7BA1\u7406\u5458\u7528 env \u6253\u5F00\u9650\u6D41\u540E <code>?token=</code> \u53EF\u8DF3\u8FC7\uFF09\u3002id \u89E3\u6790\u5B8C\u5373\u54CD\u5E94\uFF0Cingest \u5728\u540E\u53F0\u8FDB\u884C\u3002\u63A8\u8350 iOS\uFF1A<a href="{{INSTALL}}">\u4E00\u952E\u6DFB\u52A0\u5FEB\u6377\u6307\u4EE4</a> \xB7 <a href="/shortcut">\u6559\u7A0B</a>
 </small>
 
 <h2>Download</h2>
@@ -5638,133 +5780,6 @@ async function shareService(request, ctx) {
   return textResponse(200, text);
 }
 
-// src/service/shortcut.js
-async function shortcutService(request, ctx) {
-  const origin = proxyBase(request, ctx);
-  const html = PAGE7.split("{{ORIGIN}}").join(origin);
-  return new Response(html, {
-    status: 200,
-    headers: { "content-type": "text/html; charset=utf-8" }
-  });
-}
-var PAGE7 = `<!doctype html>
-<html lang=zh>
-<head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>iOS \u5FEB\u6377\u6307\u4EE4 \xB7 \u6296\u97F3\u8F6C\u5206\u4EAB\u94FE\u63A5</title>
-<style>
-  body{font:15px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:780px;margin:40px auto;padding:0 20px;color:#1c1c1e;background:#fbfbfa}
-  h1{font-size:24px;margin-bottom:4px}
-  h2{font-size:17px;margin-top:32px;border-bottom:1px solid #e5e3df;padding-bottom:6px}
-  code{background:#f0eeea;padding:1px 5px;border-radius:4px;font-size:13px}
-  .route{margin:6px 0}
-  .m{display:inline-block;width:46px;font-weight:600;color:#8a6d3b}
-  small{color:#8a857c}
-  a{color:#3b6ea5}
-  ol{padding-left:22px}
-  li{margin:8px 0}
-  .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}
-  button{font:13px/1.4 inherit;background:#f0eeea;border:1px solid #e5e3df;border-radius:4px;padding:2px 8px;cursor:pointer;color:#3b6ea5}
-  button:hover{background:#e5e3df}
-  textarea{width:100%;min-height:88px;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;border:1px solid #e5e3df;border-radius:4px;padding:8px;box-sizing:border-box}
-  pre.out{background:#f0eeea;padding:10px 12px;border-radius:4px;white-space:pre-wrap;word-break:break-all;min-height:2.4em}
-</style></head>
-<body>
-<h1>\u6296\u97F3\u8F6C\u5206\u4EAB\u94FE\u63A5</h1>
-<small>\u7528 iOS\u300C\u5FEB\u6377\u6307\u4EE4\u300D\u628A\u6296\u97F3 App \u5206\u4EAB\u53E3\u4EE4\u8F6C\u6210\u672C\u7AD9\u94FE\u63A5\uFF0C\u53D1\u7ED9\u5FAE\u4FE1 / \u4FE1\u606F\u91CC\u7684\u670B\u53CB\u3002\u7EA6 5 \u6B65\uFF0C\u624B\u5EFA\u5373\u53EF\u3002</small>
-
-<h2>1. \u65B0\u5EFA\u5FEB\u6377\u6307\u4EE4</h2>
-<ol>
-  <li>\u6253\u5F00\u300C\u5FEB\u6377\u6307\u4EE4\u300DApp \u2192 \u53F3\u4E0A\u89D2\u300C+\u300D\u65B0\u5EFA\u3002</li>
-  <li>\u540D\u79F0\u586B <code>\u6296\u97F3\u8F6C\u5206\u4EAB\u94FE\u63A5</code>\u3002</li>
-  <li>\u53F3\u4E0A\u89D2 \u24D8 \u2192 \u6253\u5F00\u300C\u5728\u5206\u4EAB\u8868\u5355\u4E2D\u663E\u793A\u300D\u3002\u63A5\u53D7\u7684\u7C7B\u578B\u52FE\u9009 <code>URL</code>\u3001<code>\u6587\u672C</code>\uFF0C\u4EE5\u53CA Safari\u300C\u7F51\u9875\u300D\uFF08\u6709\u5219\u52FE\u4E0A\uFF09\u3002</li>
-</ol>
-
-<h2>2. \u4ECE\u8F93\u5165\u53D6\u6587\u672C</h2>
-<p>\u6DFB\u52A0\u64CD\u4F5C <code>\u83B7\u53D6\u8F93\u5165\u7684\u6587\u672C</code>\uFF08Get Text from Input\uFF09\uFF0C\u8F93\u5165\u6765\u6E90\u9009 <code>\u5FEB\u6377\u6307\u4EE4\u8F93\u5165</code>\uFF08Shortcut Input\uFF09\u3002\u6296\u97F3\u5206\u4EAB\u8868\u5355\u7ED9\u7684\u662F\u4E00\u6574\u6BB5\u53E3\u4EE4\uFF0C\u8FD9\u4E00\u6B65\u628A\u5B83\u6536\u6210\u7EAF\u6587\u672C\u3002</p>
-
-<h2>3. \u8BF7\u6C42\u672C\u7AD9\u63A5\u53E3</h2>
-<p>\u6DFB\u52A0\u64CD\u4F5C <code>\u83B7\u53D6 URL \u5185\u5BB9</code>\uFF08Get Contents of URL\uFF09\uFF1A</p>
-<ul>
-  <li>URL\uFF08\u63A8\u8350 POST\uFF0C\u53E3\u4EE4\u91CC\u7684\u4E2D\u6587\u4E0D\u7528\u81EA\u5DF1\u7F16\u7801\uFF09\uFF1A</li>
-</ul>
-<div class=row>
-  <code id=posturl>{{ORIGIN}}/api/share?format=text&amp;text_full=1</code>
-  <button type=button data-copy="{{ORIGIN}}/api/share?format=text&text_full=1">\u590D\u5236</button>
-</div>
-<ul>
-  <li>\u65B9\u6CD5\uFF1A<code>POST</code></li>
-  <li>\u8BF7\u6C42\u4F53\uFF1A<code>\u6587\u4EF6</code> / <code>\u6587\u672C</code>\uFF0C\u5185\u5BB9\u9009\u4E0A\u4E00\u6B65\u7684\u6587\u672C\u3002</li>
-  <li>\u53EF\u9009\uFF1A\u82E5\u4F60\u6709\u8BBF\u95EE\u94A5\u5319\uFF0C\u628A <code>&amp;token=\u4F60\u7684\u94A5\u5319</code> \u63A5\u5230 URL \u540E\u9762\uFF0C\u53EF\u8DF3\u8FC7\u6E38\u5BA2\u9650\u6D41\u3002\u6CA1\u6709\u94A5\u5319\u4E5F\u80FD\u7528\uFF08\u4E0E\u89E3\u6790\u53F0\u6E38\u5BA2\u89C4\u5219\u76F8\u540C\uFF09\u3002</li>
-</ul>
-<p>GET \u5199\u6CD5\uFF08\u5148\u52A0\u4E00\u6B65 <code>URL \u7F16\u7801</code>\uFF0C\u518D\u62FC\u5230 <code>text=</code> \u540E\u9762\uFF09\uFF1A</p>
-<div class=row>
-  <code id=geturl>{{ORIGIN}}/api/share?format=text&amp;text_full=1&amp;text=</code>
-  <button type=button data-copy="{{ORIGIN}}/api/share?format=text&text_full=1&text=">\u590D\u5236 GET \u524D\u7F00</button>
-</div>
-<p><small><code>text_full=1</code> \u4F1A\u5C3D\u91CF\u56DE\u300C\u6807\u9898 - @\u4F5C\u8005\u300D\u52A0\u6362\u884C\u518D\u52A0\u94FE\u63A5\uFF0C\u65B9\u4FBF\u76F4\u63A5\u8F6C\u53D1\u7ED9\u670B\u53CB\uFF1B\u89E3\u6790\u8D85\u8FC7\u7EA6 8 \u79D2\u5219\u53EA\u56DE\u94FE\u63A5\u3002</small></p>
-
-<h2>4. \u590D\u5236\u5230\u526A\u8D34\u677F</h2>
-<p>\u6DFB\u52A0\u64CD\u4F5C <code>\u62F7\u8D1D\u5230\u526A\u8D34\u677F</code>\uFF08Copy to Clipboard\uFF09\uFF0C\u5185\u5BB9\u4E3A\u4E0A\u4E00\u6B65\u7684\u54CD\u5E94\u3002</p>
-
-<h2>5. \u5206\u4EAB\u7ED9\u670B\u53CB</h2>
-<p>\u518D\u6DFB\u52A0 <code>\u5206\u4EAB</code>\uFF08Share\uFF09\uFF0C\u6216 <code>\u663E\u793A\u901A\u77E5</code>\uFF08Show Notification\uFF09\u3002\u5206\u4EAB\u4F1A\u5F39\u51FA\u7CFB\u7EDF\u5206\u4EAB\u8868\uFF0C\u53EF\u9009\u5FAE\u4FE1 / \u4FE1\u606F / \u5907\u5FD8\u5F55\u3002</p>
-
-<h2>\u53D8\u4F53\uFF1A\u76F4\u63A5\u6253\u5F00\u4F5C\u54C1\u9875</h2>
-<p>\u628A\u7B2C 3 \u6B65\u7684 <code>text_full=1</code> \u53BB\u6389\uFF08\u53EA\u8981\u4E00\u884C\u94FE\u63A5\uFF09\uFF0C\u7B2C 5 \u6B65\u6539\u6210 <code>\u6253\u5F00 URL</code>\uFF08Open URLs\uFF09\u3002\u6216\u5BF9\u4E0B\u9762\u8FD9\u4E2A\u5730\u5740\u505A GET\uFF0C\u6D4F\u89C8\u5668\u4F1A 302 \u5230 <code>/work</code>\uFF1A</p>
-<div class=row>
-  <code>{{ORIGIN}}/api/share?format=redirect&amp;text=</code>
-  <button type=button data-copy="{{ORIGIN}}/api/share?format=redirect&text=">\u590D\u5236</button>
-</div>
-
-<h2>\u4ECE\u6296\u97F3\u91CC\u600E\u4E48\u70B9</h2>
-<ol>
-  <li>\u6296\u97F3 App \u6253\u5F00\u4E00\u6761\u4F5C\u54C1 \u2192 <code>\u5206\u4EAB</code> \u2192 <code>\u66F4\u591A</code> \u2192 <code>\u5FEB\u6377\u6307\u4EE4</code> \u2192 <code>\u6296\u97F3\u8F6C\u5206\u4EAB\u94FE\u63A5</code>\u3002</li>
-  <li>\u8DD1\u5B8C\u540E\u9009\u4E00\u4E2A\u597D\u53CB\u53D1\u51FA\u53BB\u3002\u5BF9\u65B9\u6253\u5F00\u7684\u662F <code>{{ORIGIN}}/work?platform=douyin&amp;id=\u2026</code>\uFF0C\u4E0D\u662F\u6296\u97F3\u77ED\u94FE\u3002</li>
-</ol>
-<p>\u60F3\u5C11\u70B9\u4E24\u4E0B\uFF1A\u7CFB\u7EDF\u8BBE\u7F6E \u2192 \u8F85\u52A9\u529F\u80FD \u2192 \u89E6\u63A7 \u2192 <code>\u8F7B\u70B9\u80CC\u9762</code>\uFF08Back Tap\uFF09\u628A\u8FD9\u4E2A\u5FEB\u6377\u6307\u4EE4\u6302\u4E0A\uFF1B\u6216\u628A\u5FEB\u6377\u6307\u4EE4\u653E\u5230\u4E3B\u5C4F\u5E55\u5C0F\u7EC4\u4EF6\u3002</p>
-
-<h2>\u8BD5\u4E00\u4E0B</h2>
-<p>\u628A\u6296\u97F3\u5206\u4EAB\u53E3\u4EE4\u8D34\u8FDB\u6765\uFF0C\u8D70\u540C\u4E00\u4E2A <code>/api/share</code>\uFF08<code>format=text&amp;text_full=1</code>\uFF09\u3002</p>
-<textarea id=try placeholder="3.05 \u590D\u5236\u6253\u5F00\u6296\u97F3\uFF0C\u770B\u770B\u3010xxx\u7684\u4F5C\u54C1\u3011 \u2026 https://v.douyin.com/AbCdEf/ F@a.Bc 05/12"></textarea>
-<div class=row>
-  <button type=button id=go>\u8F6C\u6362</button>
-  <small>\u6E38\u5BA2\u6709\u6B21\u6570\u4E0A\u9650\uFF1B\u5931\u8D25\u65F6\u4E0B\u9762\u4F1A\u663E\u793A\u63A5\u53E3\u8FD4\u56DE\u7684\u539F\u6587\u3002</small>
-</div>
-<pre class=out id=out></pre>
-
-<p><small><a href="/">\u89E3\u6790\u53F0</a> \xB7 <a href="/docs">\u63A5\u53E3\u6587\u6863</a> \xB7 <a href="/hot">\u70ED\u699C</a></small></p>
-<script>
-(function(){
-  function copyText(t, btn){
-    var done=function(){if(!btn)return;var o=btn.textContent;btn.textContent='\u5DF2\u590D\u5236';setTimeout(function(){btn.textContent=o},1200)}
-    if(navigator.clipboard&&navigator.clipboard.writeText){
-      navigator.clipboard.writeText(t).then(done,function(){})
-    }else{
-      var ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select()
-      try{document.execCommand('copy');done()}catch(e){}
-      document.body.removeChild(ta)
-    }
-  }
-  document.querySelectorAll('[data-copy]').forEach(function(btn){
-    btn.addEventListener('click',function(){copyText(btn.getAttribute('data-copy')||'',btn)})
-  })
-  var go=document.getElementById('go')
-  var box=document.getElementById('try')
-  var out=document.getElementById('out')
-  if(go)go.addEventListener('click',function(){
-    var text=box.value||''
-    out.textContent='\u8BF7\u6C42\u4E2D\u2026'
-    fetch('/api/share?format=text&text_full=1',{
-      method:'POST',
-      headers:{'content-type':'text/plain; charset=utf-8'},
-      body:text
-    }).then(function(r){return r.text().then(function(t){out.textContent=t})})
-     .catch(function(e){out.textContent=e.message||String(e)})
-  })
-})();
-</script>
-</body></html>`;
-
 // src/router.js
 async function router(request, ctx) {
   const url = new URL(request.url);
@@ -5901,9 +5916,9 @@ function buildConfig(env) {
     // D1 database binding for the query log (recent parses shown in
     // /admin). Absent (null) → logging + admin degrade to no-ops.
     d1: env.DOUYIN_D1 || env.DB || null,
-    // KV namespace binding for guest rate limiting (preferred over D1
-    // for counters: TTL auto-expires the window, no table growth).
-    // Absent → rate limiting falls back to D1.
+    // KV namespace binding for optional guest rate limiting (preferred
+    // over D1 for counters: TTL auto-expires the window, no table
+    // growth). Only used when guest.limit > 0. Absent → falls back to D1.
     kv: env.DOUYIN_KV || env.KV || null,
     // Cron hot-grow toggles. Douyin keyword search returns risk-control
     // 2483 and the TikTok feed device-id is rate-limited (429), so both are
@@ -5923,12 +5938,13 @@ function buildConfig(env) {
     },
     // Guest mode: unauthenticated callers can parse (hybrid/video_data)
     // and get TEMPORARY proxied download links, but never raw JSON, the
-    // raw per-platform endpoints, or /admin. Rate-limited per IP via D1
-    // (so guest access requires a D1 binding — without one we can't
-    // enforce limits and guests are refused). Default on.
+    // raw per-platform endpoints, or /admin. Default on. Frequency
+    // limit is off by default (limit 0 = unlimited, no D1/KV needed).
+    // Set GUEST_RATE_LIMIT or GUEST_LIMIT > 0 to cap parses per IP;
+    // then KV is preferred and D1 is the fallback (no store → 503).
     guest: {
       enabled: !["0", "false", "no", "off"].includes(String(env.GUEST_ENABLED ?? "").toLowerCase()),
-      limit: toNumber(env.GUEST_RATE_LIMIT, 20),
+      limit: toNumber(env.GUEST_RATE_LIMIT ?? env.GUEST_LIMIT, 0),
       windowSec: toNumber(env.GUEST_RATE_WINDOW, 3600),
       linkTtlSec: toNumber(env.GUEST_LINK_TTL, 7200)
     },

@@ -48,9 +48,9 @@ export function buildConfig (env) {
     // D1 database binding for the query log (recent parses shown in
     // /admin). Absent (null) → logging + admin degrade to no-ops.
     d1: env.DOUYIN_D1 || env.DB || null,
-    // KV namespace binding for guest rate limiting (preferred over D1
-    // for counters: TTL auto-expires the window, no table growth).
-    // Absent → rate limiting falls back to D1.
+    // KV namespace binding for optional guest rate limiting (preferred
+    // over D1 for counters: TTL auto-expires the window, no table
+    // growth). Only used when guest.limit > 0. Absent → falls back to D1.
     kv: env.DOUYIN_KV || env.KV || null,
     // Cron hot-grow toggles. Douyin keyword search returns risk-control
     // 2483 and the TikTok feed device-id is rate-limited (429), so both are
@@ -70,12 +70,13 @@ export function buildConfig (env) {
     },
     // Guest mode: unauthenticated callers can parse (hybrid/video_data)
     // and get TEMPORARY proxied download links, but never raw JSON, the
-    // raw per-platform endpoints, or /admin. Rate-limited per IP via D1
-    // (so guest access requires a D1 binding — without one we can't
-    // enforce limits and guests are refused). Default on.
+    // raw per-platform endpoints, or /admin. Default on. Frequency
+    // limit is off by default (limit 0 = unlimited, no D1/KV needed).
+    // Set GUEST_RATE_LIMIT or GUEST_LIMIT > 0 to cap parses per IP;
+    // then KV is preferred and D1 is the fallback (no store → 503).
     guest: {
       enabled: !['0', 'false', 'no', 'off'].includes(String(env.GUEST_ENABLED ?? '').toLowerCase()),
-      limit: toNumber(env.GUEST_RATE_LIMIT, 20),
+      limit: toNumber(env.GUEST_RATE_LIMIT ?? env.GUEST_LIMIT, 0),
       windowSec: toNumber(env.GUEST_RATE_WINDOW, 3600),
       linkTtlSec: toNumber(env.GUEST_LINK_TTL, 7200)
     },

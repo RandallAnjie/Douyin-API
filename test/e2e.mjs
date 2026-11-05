@@ -6,7 +6,7 @@ import worker from '../src/worker.js'
 import { sign, canonical } from '../src/utils/auth.js'
 
 // GUEST_ENABLED=0 so the no-token hybrid check is a deterministic 401
-// (guest mode needs a D1 binding the harness doesn't have).
+// (this file still covers the locked-down guest-off path).
 const env = { DOUYIN_API_TOKEN: 'secret123', DOUYIN_COOKIE: '', TIKTOK_COOKIE: '', GUEST_ENABLED: '0' }
 const ctx = { waitUntil () {} }
 const call = (url, init) => worker.fetch(new Request(url, init), env, ctx)
@@ -227,9 +227,15 @@ try {
 r = await call('https://x/shortcut')
 html = await r.text()
 ok('GET /shortcut -> 200 html', r.status === 200 && html.includes('抖音转分享链接') && html.includes('/api/share'))
+ok('shortcut one-tap install + fallback heading',
+  html.includes('一键添加快捷指令') &&
+  html.includes('https://www.icloud.com/shortcuts/d8c029c7084e49f78fe9e7735a237ed3') &&
+  html.includes('不想用现成的？手动搭建'))
 r = await call('https://x/docs')
 html = await r.text()
 ok('docs lists /api/share and /shortcut', html.includes('/api/share') && html.includes('href="/shortcut"'))
+ok('docs /api/share mentions one-tap install',
+  html.includes('一键添加快捷指令') && html.includes('https://www.icloud.com/shortcuts/d8c029c7084e49f78fe9e7735a237ed3'))
 r = await call('https://x/')
 html = await r.text()
 ok('解析台 footer links /shortcut', html.includes('href="/shortcut"') && html.includes('快捷指令'))

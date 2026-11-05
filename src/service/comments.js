@@ -1,6 +1,6 @@
 // GET /api/comments?platform=&id=&page= — public, reads cached comments
-// from D1. If none yet, lazily populates (rate-limited per IP to avoid
-// abuse) then returns.
+// from D1. If none yet, lazily populates (rate-limited per IP only when
+// guest.limit > 0) then returns.
 import { HTTPException } from '../utils/http-exception.js'
 import { rawJsonResponse } from '../utils/respond.js'
 import { getComments, rateLimitHit } from '../utils/db.js'

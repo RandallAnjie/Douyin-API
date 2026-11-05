@@ -1,6 +1,7 @@
 // Root docs page — a hand-written, plain-HTML index of the API. No
 // framework, no template engine; just a string. Lists every route and
 // explains the meting-style auth (?token= master key, or ?auth= HMAC).
+import { SHORTCUT_INSTALL_URL } from './shortcut.js'
 
 export default async function docsService (request, ctx) {
   const tokenSource = ctx.config.auth.tokenSource
@@ -12,7 +13,7 @@ export default async function docsService (request, ctx) {
 }
 
 function renderDocs (tokenSource) {
-  return DOCS_HTML.replace('{{TOKEN_SOURCE}}', tokenSource)
+  return DOCS_HTML.replace('{{TOKEN_SOURCE}}', tokenSource).replaceAll('{{INSTALL}}', SHORTCUT_INSTALL_URL)
 }
 
 const DOCS_HTML = `<!doctype html>
@@ -81,7 +82,7 @@ const DOCS_HTML = `<!doctype html>
 <div class=route><span class=m>GET</span> <code>/api/share?text=&format=text&text_full=0</code></div>
 <div class=route><span class=m>POST</span> <code>/api/share?format=text&text_full=1</code> <small>body: 分享口令（text/plain 或 form）</small></div>
 <small>
-从抖音 / TikTok 分享口令里抽出第一条 http(s) 链接，解析 platform+id，返回本站 <code>/work?platform=&amp;id=</code>。<code>format=text</code>（默认）只回一行链接；<code>text_full=1</code> 回「标题 - @作者」加换行再加链接；<code>format=json</code> 回 platform/id/link/title/author/cover/play/download（媒体为与热榜相同的同域 HMAC <code>/proxy</code>）；<code>format=redirect</code> 302 到作品页。鉴权与 hybrid/video_data 游客规则相同（<code>?token=</code> 不限流；游客限流且不返回原始 JSON）。id 解析完即响应，ingest 在后台进行。<a href="/shortcut">iOS 快捷指令教程</a>
+从抖音 / TikTok 分享口令里抽出第一条 http(s) 链接，解析 platform+id，返回本站 <code>/work?platform=&amp;id=</code>。<code>format=text</code>（默认）只回一行链接；<code>text_full=1</code> 回「标题 - @作者」加换行再加链接；<code>format=json</code> 回 platform/id/link/title/author/cover/play/download（媒体为与热榜相同的同域 HMAC <code>/proxy</code>）；<code>format=redirect</code> 302 到作品页。鉴权与 hybrid/video_data 游客规则相同（游客不返回原始 JSON；默认不限流，管理员用 env 打开限流后 <code>?token=</code> 可跳过）。id 解析完即响应，ingest 在后台进行。推荐 iOS：<a href="{{INSTALL}}">一键添加快捷指令</a> · <a href="/shortcut">教程</a>
 </small>
 
 <h2>Download</h2>

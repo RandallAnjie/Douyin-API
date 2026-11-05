@@ -130,6 +130,8 @@ async function guestOrAuth (request, ctx, format, primaryId) {
       error: errorResponse(format, 401, '未授权：请在链接后加上 ?token=访问钥匙 / Unauthorized: pass ?token=<secret>')
     }
   }
+  // Frequency limit applies only when guest.limit > 0; 0 is unlimited
+  // and rateLimitHit does not need D1/KV.
   const rl = await rateLimitHit(ctx, getClientIp(request), g.limit, g.windowSec)
   if (rl.reason === 'no-store') {
     return {
