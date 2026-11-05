@@ -22,10 +22,9 @@ export function imgProxyLink (request, ctx, srcUrl) {
   return `${proxyBase(request, ctx)}/img?${params.toString()}`
 }
 
-// Build a /proxy link. When expSec is given the link is TEMPORARY: an
-// exp=<unix-sec> is appended and the HMAC covers it, so guests get a
-// link that stops working after the TTL and can't be tampered with.
-export function proxyLink (request, ctx, platform, id, kind, expSec) {
+// Query string for a /proxy link (HMAC over proxy{platform}{id}, or
+// proxy{platform}{id}{exp} when temporary). Never the master token.
+export function proxyQuery (ctx, platform, id, kind, expSec) {
   const secret = ctx.config.auth.token
   const params = new URLSearchParams({ platform, id: String(id), kind })
   if (expSec) {
@@ -35,7 +34,19 @@ export function proxyLink (request, ctx, platform, id, kind, expSec) {
   } else {
     params.set('auth', sign(canonical('proxy', platform, id), secret))
   }
-  return `${proxyBase(request, ctx)}/proxy?${params.toString()}`
+  return params.toString()
+}
+
+// Path-only /proxy link (same-origin). Public boards put this on `play`
+// so <video> can start without waiting on a parse.
+export function proxyPath (ctx, platform, id, kind, expSec) {
+  return `${ctx.config.http.prefix}/proxy?${proxyQuery(ctx, platform, id, kind, expSec)}`
+}
+
+// Build an absolute /proxy link. When expSec is given the link is
+// TEMPORARY: an exp=<unix-sec> is appended and the HMAC covers it.
+export function proxyLink (request, ctx, platform, id, kind, expSec) {
+  return `${proxyBase(request, ctx)}/proxy?${proxyQuery(ctx, platform, id, kind, expSec)}`
 }
 
 // Replace the CDN URLs in a minimal hybrid result with /proxy links.

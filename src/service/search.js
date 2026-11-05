@@ -82,52 +82,52 @@ footer a{color:var(--muted)}
   <footer>自托管于 RandallFlare · 仅搜索站内已解析的内容</footer>
 </main>
 <div id=lb class=lb><button class=lb-close id=lbClose>×</button><button class="lb-nav lb-prev" id=lbPrev>‹</button><div class=lb-stage id=lbStage></div><button class="lb-nav lb-next" id=lbNext>›</button><div class=lb-idx id=lbIdx></div></div>
+<script src="/ui.js"></script>
 <script>
 (function(){
-  var $=function(s){return document.querySelector(s)}
+  var DT=window.DT,$=DT.qs,el=DT.el
   var grid=$('#grid'),statusEl=$('#status'),pager=$('#pager'),qIn=$('#q')
   var q='',page=1
-  function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
+  var lb=DT.bindLightbox({root:'#lb',stage:'#lbStage',close:'#lbClose',prev:'#lbPrev',next:'#lbNext',idx:'#lbIdx'})
+
+  // --- render ---
   function card(row){
-    var a=el('div','card');a.addEventListener('click',function(){openModal(row)})
+    var a=el('div','card');a.addEventListener('click',function(){onCardClick(row)})
     var th=el('div','thumb')
     if(row.cover){var im=el('img');im.loading='lazy';im.src=row.cover;th.appendChild(im)}
     th.appendChild(el('span','badge',row.type==='image'?'图集':'视频'))
     th.appendChild(el('span','hot','🔥'+(row.hits||1)))
-    var dl=el('a','datalink','📊');dl.href='/work?platform='+encodeURIComponent(row.platform)+'&id='+encodeURIComponent(row.video_id);dl.addEventListener('click',function(e){e.stopPropagation()});th.appendChild(dl)
+    var dl=el('a','datalink','📊');dl.href=DT.workUrl(row.platform,row.video_id);dl.addEventListener('click',function(e){e.stopPropagation()});th.appendChild(dl)
     a.appendChild(th)
     var info=el('div','info')
-    if(row.author_id){var wa=el('a','who',row.author||'未知作者');wa.href='/author?platform='+encodeURIComponent(row.platform)+'&id='+encodeURIComponent(row.author_id);wa.style.textDecoration='none';wa.addEventListener('click',function(e){e.stopPropagation()});info.appendChild(wa)}
+    if(row.author_id){var wa=el('a','who',row.author||'未知作者');wa.href=DT.authorUrl(row.platform,row.author_id);wa.style.textDecoration='none';wa.addEventListener('click',function(e){e.stopPropagation()});info.appendChild(wa)}
     else info.appendChild(el('div','who',row.author||'未知作者'))
     info.appendChild(el('div','ttl',row.description||'(无标题)'));a.appendChild(info)
     return a
   }
-  async function run(p){
+  function render(jj){
+    var rows=jj.data||[]
+    statusEl.textContent=jj.total?('“'+q+'” 共 '+jj.total+' 条 · 第 '+jj.page+'/'+jj.pages+' 页'):'没搜到“'+q+'”，换个词或先去解析'
+    rows.forEach(function(row){grid.appendChild(card(row))})
+    if(jj.pages>1){var pv=el('button',null,'← 上一页');pv.disabled=jj.page<=1;pv.addEventListener('click',function(){run(page-1)});var nx=el('button',null,'下一页 →');nx.disabled=jj.page>=jj.pages;nx.addEventListener('click',function(){run(page+1)});pager.appendChild(pv);pager.appendChild(el('span',null,jj.page+' / '+jj.pages));pager.appendChild(nx)}
+  }
+
+  // --- data ---
+  function run(p){
     page=p||1;q=(qIn.value||'').trim()
     if(!q){statusEl.textContent='输入关键词搜索';grid.innerHTML='';pager.innerHTML='';return}
     history.replaceState(null,'','/search?q='+encodeURIComponent(q))
     statusEl.textContent='搜索中…';grid.innerHTML='';pager.innerHTML=''
-    try{
-      var r=await fetch('/api/search?q='+encodeURIComponent(q)+'&page='+page+'&limit=12')
-      var jj=await r.json();var rows=jj.data||[]
-      statusEl.textContent=jj.total?('“'+q+'” 共 '+jj.total+' 条 · 第 '+jj.page+'/'+jj.pages+' 页'):'没搜到“'+q+'”，换个词或先去解析'
-      rows.forEach(function(row){grid.appendChild(card(row))})
-      if(jj.pages>1){var pv=el('button',null,'← 上一页');pv.disabled=jj.page<=1;pv.addEventListener('click',function(){run(page-1)});var nx=el('button',null,'下一页 →');nx.disabled=jj.page>=jj.pages;nx.addEventListener('click',function(){run(page+1)});pager.appendChild(pv);pager.appendChild(el('span',null,jj.page+' / '+jj.pages));pager.appendChild(nx)}
-    }catch(e){statusEl.textContent='搜索失败：'+e.message}
+    DT.getJson('/api/search?q='+encodeURIComponent(q)+'&page='+page+'&limit=12').then(render).catch(function(e){statusEl.textContent='搜索失败：'+e.message})
+  }
+
+  // --- events ---
+  function onCardClick(row){
+    var slides=DT.slidesFromRow(row)
+    if(slides.length)lb.open(slides)
   }
   $('#go').addEventListener('click',function(){run(1)})
   qIn.addEventListener('keydown',function(e){if(e.key==='Enter')run(1)})
-  // lightbox (shared shape with discover)
-  var lb=$('#lb'),lbStage=$('#lbStage'),lbIdx=$('#lbIdx'),lbPrev=$('#lbPrev'),lbNext=$('#lbNext'),slides=[],cur=0
-  function openModal(row){slides=[];if(row.play)slides=[{type:'video',url:row.play}];else if(row.extra&&row.extra.images&&row.extra.images.length)slides=row.extra.images.map(function(u){return{type:'image',url:u}});else if(row.cover)slides=[{type:'image',url:row.cover}];else return;cur=0;rs();lb.classList.add('on');document.body.style.overflow='hidden'}
-  function rs(){var s=slides[cur];lbStage.innerHTML='';if(s.type==='video'){var v=document.createElement('video');v.controls=true;v.setAttribute('playsinline','');v.autoplay=true;v.src=s.url;lbStage.appendChild(v)}else{var im=document.createElement('img');im.src=s.url;lbStage.appendChild(im)}var m=slides.length>1;lbPrev.style.display=m?'':'none';lbNext.style.display=m?'':'none';lbIdx.style.display=m?'':'none';lbIdx.textContent=(cur+1)+' / '+slides.length}
-  function go(d){if(slides.length<2)return;cur=(cur+d+slides.length)%slides.length;rs()}
-  function close(){lb.classList.remove('on');lbStage.innerHTML='';document.body.style.overflow=''}
-  lbPrev.addEventListener('click',function(e){e.stopPropagation();go(-1)});lbNext.addEventListener('click',function(e){e.stopPropagation();go(1)})
-  $('#lbClose').addEventListener('click',close);lb.addEventListener('click',function(e){if(e.target===lb)close()})
-  document.addEventListener('keydown',function(e){if(!lb.classList.contains('on'))return;if(e.key==='Escape')close();else if(e.key==='ArrowLeft')go(-1);else if(e.key==='ArrowRight')go(1)})
-  var tx=0;lb.addEventListener('touchstart',function(e){tx=e.changedTouches[0].clientX},{passive:true});lb.addEventListener('touchend',function(e){var dx=e.changedTouches[0].clientX-tx;if(Math.abs(dx)>40)go(dx<0?1:-1)},{passive:true})
-  // init from ?q=
   var pre=new URLSearchParams(location.search).get('q');if(pre){qIn.value=pre;run(1)}
 })();
 </script>

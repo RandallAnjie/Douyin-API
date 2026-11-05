@@ -84,13 +84,13 @@ h2{font-size:15px;margin:30px 0 12px;font-family:var(--serif);letter-spacing:.04
   <div id=app><p class=status>加载中…</p></div>
 </main>
 <div id=lb class=lb><button class=lb-close id=lbClose>×</button><button class="lb-nav lb-prev" id=lbPrev>‹</button><div class=lb-stage id=lbStage></div><button class="lb-nav lb-next" id=lbNext>›</button><div class=lb-idx id=lbIdx></div></div>
+<script src="/ui.js"></script>
 <script>
 (function(){
-  var $=function(s){return document.querySelector(s)}
+  var DT=window.DT,$=DT.qs,el=DT.el,fmt=DT.fmtW
   var q=new URLSearchParams(location.search)
   var platform=q.get('platform'),id=q.get('id'),page=Math.max(1,Number(q.get('page'))||1)
-  function fmt(n){n=Number(n)||0;return n>=10000?(n/10000).toFixed(1)+'w':String(n)}
-  function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
+  var lb=DT.bindLightbox({root:'#lb',stage:'#lbStage',close:'#lbClose',prev:'#lbPrev',next:'#lbNext',idx:'#lbIdx'})
   function tstr(ms){if(!ms)return '—';var d=new Date(ms);return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2)}
   function followerChart(fh){
     var vals=fh.map(function(p){return Number(p.follower)||0}),n=fh.length
@@ -105,24 +105,18 @@ h2{font-size:15px;margin:30px 0 12px;font-family:var(--serif);letter-spacing:.04
     svg+='</svg>'
     return '<div class=cap>粉丝趋势 '+tstr(fh[0].ts)+' → '+tstr(fh[n-1].ts)+' · 当前 '+fmt(vals[n-1])+'</div>'+svg
   }
+
+  // --- render ---
   function card(row){
-    var a=el('div','card');a.addEventListener('click',function(){openModal(row)})
+    var a=el('div','card');a.addEventListener('click',function(){onCardClick(row)})
     var th=el('div','thumb')
     if(row.cover){var im=el('img');im.loading='lazy';im.src=row.cover;th.appendChild(im)}
     th.appendChild(el('span','badge',row.type==='image'?'图集':'视频'))
     th.appendChild(el('span','hot','🔥'+(row.hits||1)))
-    var dl=el('a','datalink','📊');dl.href='/work?platform='+encodeURIComponent(row.platform)+'&id='+encodeURIComponent(row.video_id);dl.addEventListener('click',function(e){e.stopPropagation()});th.appendChild(dl)
+    var dl=el('a','datalink','📊');dl.href=DT.workUrl(row.platform,row.video_id);dl.addEventListener('click',function(e){e.stopPropagation()});th.appendChild(dl)
     a.appendChild(th)
     var info=el('div','info');info.appendChild(el('div','who',tstr((row.create_time||0)*1000)));info.appendChild(el('div','ttl',row.description||'(无标题)'));a.appendChild(info)
     return a
-  }
-  async function load(){
-    if(!platform||!id){$('#app').innerHTML='<p class=status>缺少 platform / id</p>';return}
-    try{
-      var r=await fetch('/api/author?platform='+encodeURIComponent(platform)+'&id='+encodeURIComponent(id)+'&page='+page+'&limit=24')
-      if(r.status!==200){var j=await r.json().catch(function(){return{}});$('#app').innerHTML='<p class=status>'+(j.message||('HTTP '+r.status))+'</p>';return}
-      render(await r.json())
-    }catch(e){$('#app').innerHTML='<p class=status>加载失败：'+e.message+'</p>'}
   }
   function render(d){
     var au=d.author||{},ex=au.extra||{},works=d.works||[],fh=d.follower_history||[]
@@ -143,16 +137,21 @@ h2{font-size:15px;margin:30px 0 12px;font-family:var(--serif);letter-spacing:.04
       var nx=el('button',null,'下一页 →');nx.disabled=page>=d.pages;nx.addEventListener('click',function(){location.search='?platform='+encodeURIComponent(platform)+'&id='+encodeURIComponent(id)+'&page='+(page+1)})
       pg.appendChild(pv);pg.appendChild(el('span',null,page+' / '+d.pages));pg.appendChild(nx);app.appendChild(pg)}
   }
-  // lightbox
-  var lb=$('#lb'),lbStage=$('#lbStage'),lbIdx=$('#lbIdx'),lbPrev=$('#lbPrev'),lbNext=$('#lbNext'),slides=[],cur=0
-  function openModal(row){slides=[];if(row.play)slides=[{type:'video',url:row.play}];else if(row.extra&&row.extra.images&&row.extra.images.length)slides=row.extra.images.map(function(u){return{type:'image',url:u}});else if(row.cover)slides=[{type:'image',url:row.cover}];else return;cur=0;rs();lb.classList.add('on');document.body.style.overflow='hidden'}
-  function rs(){var s=slides[cur];lbStage.innerHTML='';if(s.type==='video'){var v=document.createElement('video');v.controls=true;v.setAttribute('playsinline','');v.autoplay=true;v.src=s.url;lbStage.appendChild(v)}else{var im=document.createElement('img');im.src=s.url;lbStage.appendChild(im)}var m=slides.length>1;lbPrev.style.display=m?'':'none';lbNext.style.display=m?'':'none';lbIdx.style.display=m?'':'none';lbIdx.textContent=(cur+1)+' / '+slides.length}
-  function go(dr){if(slides.length<2)return;cur=(cur+dr+slides.length)%slides.length;rs()}
-  function close(){lb.classList.remove('on');lbStage.innerHTML='';document.body.style.overflow=''}
-  lbPrev.addEventListener('click',function(e){e.stopPropagation();go(-1)});lbNext.addEventListener('click',function(e){e.stopPropagation();go(1)})
-  $('#lbClose').addEventListener('click',close);lb.addEventListener('click',function(e){if(e.target===lb)close()})
-  document.addEventListener('keydown',function(e){if(!lb.classList.contains('on'))return;if(e.key==='Escape')close();else if(e.key==='ArrowLeft')go(-1);else if(e.key==='ArrowRight')go(1)})
-  var tx=0;lb.addEventListener('touchstart',function(e){tx=e.changedTouches[0].clientX},{passive:true});lb.addEventListener('touchend',function(e){var dx=e.changedTouches[0].clientX-tx;if(Math.abs(dx)>40)go(dx<0?1:-1)},{passive:true})
+
+  // --- data ---
+  function load(){
+    if(!platform||!id){$('#app').innerHTML='<p class=status>缺少 platform / id</p>';return}
+    DT.getJson('/api/author?platform='+encodeURIComponent(platform)+'&id='+encodeURIComponent(id)+'&page='+page+'&limit=24').then(function(j){
+      if(j.__status!==200){$('#app').innerHTML='<p class=status>'+(j.message||('HTTP '+j.__status))+'</p>';return}
+      render(j)
+    }).catch(function(e){$('#app').innerHTML='<p class=status>加载失败：'+e.message+'</p>'})
+  }
+
+  // --- events ---
+  function onCardClick(row){
+    var slides=DT.slidesFromRow(row)
+    if(slides.length)lb.open(slides)
+  }
   load()
 })();
 </script>
