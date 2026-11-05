@@ -32,7 +32,7 @@ const DOCS_HTML = `<!doctype html>
 </style></head>
 <body>
 <h1>Douyin / TikTok API</h1>
-<small>RandallFlare worker · port of Evil0ctal/Douyin_TikTok_Download_API · token source: <code>{{TOKEN_SOURCE}}</code></small>
+<small>RandallFlare worker · port of Evil0ctal/Douyin_TikTok_Download_API · token source: <code>{{TOKEN_SOURCE}}</code> · <a href="/shortcut">iOS 快捷指令</a></small>
 
 <h2>鉴权 / Auth</h2>
 <p>带 <span class=lock>锁</span> 的接口需要鉴权，两种方式任选其一（与 Meting-API 一致）：</p>
@@ -77,6 +77,13 @@ const DOCS_HTML = `<!doctype html>
 <div class=route><span class=m>GET</span><span class=lock>🔒</span> <code>/video_data?url=&minimal=false&refresh=0&proxy=0</code> <small>自动识别 douyin/tiktok</small></div>
 <small>minimal=true 返回统一精简结构；proxy=1（需 minimal=true）把媒体直链改写成下面的 /proxy 缓存链接；refresh=1 跳过元数据缓存强刷。</small>
 
+<h2>Share <small>/api/share</small></h2>
+<div class=route><span class=m>GET</span> <code>/api/share?text=&format=text&text_full=0</code></div>
+<div class=route><span class=m>POST</span> <code>/api/share?format=text&text_full=1</code> <small>body: 分享口令（text/plain 或 form）</small></div>
+<small>
+从抖音 / TikTok 分享口令里抽出第一条 http(s) 链接，解析 platform+id，返回本站 <code>/work?platform=&amp;id=</code>。<code>format=text</code>（默认）只回一行链接；<code>text_full=1</code> 回「标题 - @作者」加换行再加链接；<code>format=json</code> 回 platform/id/link/title/author/cover/play/download（媒体为与热榜相同的同域 HMAC <code>/proxy</code>）；<code>format=redirect</code> 302 到作品页。鉴权与 hybrid/video_data 游客规则相同（<code>?token=</code> 不限流；游客限流且不返回原始 JSON）。id 解析完即响应，ingest 在后台进行。<a href="/shortcut">iOS 快捷指令教程</a>
+</small>
+
 <h2>Download</h2>
 <div class=route><span class=m>GET</span><span class=lock>🔒</span> <code>/download?url=&with_watermark=false</code> <small>直接 stream 视频/图片</small></div>
 
@@ -90,4 +97,5 @@ kind: <code>nwm</code>（无水印视频 HQ；playwm 会改写成 play，永不�
 <code>source</code> 字段标记 <code>signed</code>（web detail）或 <code>share</code>（iesdouyin 分享页回退）。master token 加 <code>?debug=1</code> 可看脱敏后的 signed-endpoint 失败原因（uifid/msToken/fp 已 REDACTED）。
 </small>
 
+<p><small><a href="/">解析台</a> · <a href="/shortcut">快捷指令</a></small></p>
 </body></html>`

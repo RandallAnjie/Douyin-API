@@ -25,6 +25,8 @@ import { imgService } from './service/img.js'
 import { uiScriptService } from './service/ui.js'
 import appService from './service/app.js'
 import docsService from './service/docs.js'
+import shareService from './service/share.js'
+import shortcutService from './service/shortcut.js'
 import { HTTPException } from './utils/http-exception.js'
 
 export async function router (request, ctx) {
@@ -59,6 +61,12 @@ export async function router (request, ctx) {
   }
   if (pathname === '/docs' && request.method === 'GET') {
     return docsService(request, ctx)
+  }
+  if (pathname === '/shortcut' && request.method === 'GET') {
+    return shortcutService(request, ctx)
+  }
+  if (pathname === '/api/share' && (request.method === 'GET' || request.method === 'POST')) {
+    return shareService(request, ctx)
   }
   if (pathname === '/admin' && request.method === 'GET') {
     return adminPageService(request, ctx)
