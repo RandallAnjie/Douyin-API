@@ -5,6 +5,7 @@
 // No signature, no cookie. This is what makes Douyin library-growth viable.
 import { fetchGetJson, buildHeaders } from '../../utils/base-crawler.js'
 import { urlencode } from '../../utils/params.js'
+import { videoDimensions } from '../../utils/media.js'
 
 const FEED_URL = 'https://aweme.snssdk.com/aweme/v1/feed/'
 const HOT_SEARCH_URL = 'https://aweme.snssdk.com/aweme/v1/hot/search/list/'
@@ -37,17 +38,21 @@ export async function fetchAppFeed (ctx, count = 12) {
   return Array.isArray(data.aweme_list) ? data.aweme_list : []
 }
 
-// Map a feed aweme to the minimal card fields the 热门 board needs (cover,
-// author, desc, like count). Full parsing happens on click, by id.
+// Map a feed aweme to the card fields the 热门 board needs. Playback
+// uses a same-origin /proxy URL minted at serve time; width/height
+// size the lightbox poster before metadata arrives.
 export function feedCard (a) {
   const v = a.video || {}
+  const dim = videoDimensions(v)
   return {
     id: a.aweme_id,
     desc: (a.desc || '').slice(0, 90),
     author: a.author?.nickname || '',
     cover: v.cover?.url_list?.[0] || v.origin_cover?.url_list?.[0] || a.cover?.url_list?.[0] || null,
     digg: a.statistics?.digg_count || 0,
-    type: (a.aweme_type === 2 || a.aweme_type === 68 || Array.isArray(a.images)) ? 'image' : 'video'
+    type: (a.aweme_type === 2 || a.aweme_type === 68 || Array.isArray(a.images)) ? 'image' : 'video',
+    width: dim.width || 0,
+    height: dim.height || 0
   }
 }
 

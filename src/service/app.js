@@ -141,9 +141,10 @@ footer a{color:var(--muted)}
   <footer>自托管于 RandallFlare · <a href="/hot">热榜</a> · <a href="/discover">发现</a> · <a href="/search">搜索</a> · <a href="/admin">档案</a> · <a href="/docs">接口文档</a></footer>
 </main>
 
+<script src="/ui.js"></script>
 <script>
 (function(){
-  var $=function(s){return document.querySelector(s)}
+  var DT=window.DT,$=DT.qs,el=DT.el,fmt=DT.fmtW
   var KEY='dt_key'
   var keyInput=$('#key'),pasteBox=$('#paste'),statusEl=$('#status'),out=$('#out'),goBtn=$('#go')
   var keytoggle=$('#keytoggle'),keywrap=$('#keywrap')
@@ -153,99 +154,29 @@ footer a{color:var(--muted)}
 
   function extractUrl(t){var m=String(t||'').match(/https?:\\/\\/[^\\s]+/);return m?m[0]:''}
   function setStatus(s,kind){statusEl.textContent=s;statusEl.className='status'+(kind?' '+kind:'')}
-  function el(tag,cls,txt){var e=document.createElement(tag);if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e}
-  function fmt(n){n=Number(n)||0;return n>=10000?(n/10000).toFixed(1)+'w':String(n)}
+  function stat(label,n){var w=el('span','stat');w.appendChild(el('b',null,fmt(n)));w.appendChild(el('i',null,label));return w}
 
   var inflight=0
   var lastGuest=false
-  async function parse(text){
+
+  // --- data ---
+  function parse(text){
     var url=extractUrl(text)
     if(!url){setStatus('没找到链接，确认粘的是分享口令','warn');return}
     var key=(keyInput.value||'').trim()
     lastGuest=!key
     var my=++inflight
     setStatus(key?'解码中…':'解码中…（游客模式）','load');out.innerHTML=''
-    try{
-      var api='/api/hybrid/video_data?minimal=true&proxy=1&url='+encodeURIComponent(url)
-      if(key)api+='&token='+encodeURIComponent(key)
-      var r=await fetch(api)
-      var j=await r.json()
+    DT.parseShare(url,key).then(function(j){
       if(my!==inflight)return
-      if(r.status===429){setStatus((j&&j.message)||'游客次数已达上限，请稍后再试或填入访问密钥','warn');return}
-      if(r.status!==200){setStatus('失败：'+((j&&j.message)||('HTTP '+r.status)),'err');return}
+      if(j.__status===429){setStatus((j&&j.message)||'游客次数已达上限，请稍后再试或填入访问密钥','warn');return}
+      if(j.__status!==200){setStatus('失败：'+((j&&j.message)||('HTTP '+j.__status)),'err');return}
       render(j.data)
       setStatus((key?'已解码':'已解码（游客 · 链接临时有效）')+' · '+(j.data&&j.data.platform||''),'ok')
-    }catch(e){if(my===inflight)setStatus('网络错误：'+e.message,'err')}
+    }).catch(function(e){if(my===inflight)setStatus('网络错误：'+e.message,'err')})
   }
 
-  function withFlag(href,flag){if(!href)return href;return href+(href.indexOf('?')>-1?'&':'?')+flag}
-  function withDownload(href){return withFlag(href,'download=1')}
-  function dlBtn(href,label){var a=el('a','btn',label);a.href=withDownload(href);a.setAttribute('download','');return a}
-  function toast(msg){
-    var t=el('div','toast',msg)
-    document.body.appendChild(t)
-    setTimeout(function(){if(t.parentNode)t.parentNode.removeChild(t)},1600)
-  }
-  function fallbackCopy(text,done){
-    var ta=document.createElement('textarea')
-    ta.value=text;ta.setAttribute('readonly','');ta.style.cssText='position:fixed;left:-9999px;top:0'
-    document.body.appendChild(ta);ta.select();ta.setSelectionRange(0,text.length)
-    var ok=false
-    try{ok=document.execCommand('copy')}catch(e){}
-    document.body.removeChild(ta)
-    if(ok)done()
-  }
-  function copyText(text,done){
-    if(navigator.clipboard&&navigator.clipboard.writeText){
-      navigator.clipboard.writeText(text).then(done,function(){fallbackCopy(text,done)})
-    }else fallbackCopy(text,done)
-  }
-  function copyBtn(text,label){
-    var b=el('button','btn ghost',label)
-    b.addEventListener('click',function(){copyText(text,function(){var o=b.textContent;b.textContent='已复制';toast('已复制');setTimeout(function(){b.textContent=o},1200)})})
-    return b
-  }
-  function workPageUrl(platform,id){return location.origin+'/work?platform='+encodeURIComponent(platform)+'&id='+encodeURIComponent(id)}
-  function shareBtn(platform,id){
-    var b=el('button','btn ghost','分享')
-    b.addEventListener('click',function(){copyText(workPageUrl(platform,id),function(){var o=b.textContent;b.textContent='已复制';toast('已复制');setTimeout(function(){b.textContent=o},1200)})})
-    return b
-  }
-  function applyAspect(frame,w,h){
-    w=Number(w)||0;h=Number(h)||0
-    if(!(w>0&&h>0))return
-    frame.style.aspectRatio=w+' / '+h
-    if(w>=h)frame.classList.add('is-h');else frame.classList.remove('is-h')
-  }
-  function clickToPlay(frame,cover,playUrl,w,h){
-    var started=false
-    function startPlay(){
-      if(started)return
-      started=true
-      frame.style.cursor=''
-      frame.innerHTML=''
-      var v=el('video');v.controls=true;v.autoplay=true;v.playsInline=true;v.preload='metadata'
-      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
-      if(cover)v.poster=cover
-      var src=document.createElement('source')
-      src.src=playUrl;src.type='video/mp4'
-      v.appendChild(src)
-      v.addEventListener('playing',function(){v.preload='auto'})
-      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
-      frame.appendChild(v)
-      frame.appendChild(el('span','badge','视频'))
-      var p=v.play();if(p&&p.catch)p.catch(function(){})
-    }
-    applyAspect(frame,w,h)
-    var im=el('img');im.src=cover||'';im.alt='预览';im.loading='lazy'
-    frame.appendChild(im)
-    frame.appendChild(el('span','playhint','▶'))
-    frame.style.cursor='pointer'
-    frame.addEventListener('click',startPlay)
-    return startPlay
-  }
-  function stat(label,n){var w=el('span','stat');w.appendChild(el('b',null,fmt(n)));w.appendChild(el('i',null,label));return w}
-
+  // --- render ---
   function render(d){
     out.innerHTML=''
     if(!d){setStatus('空结果','warn');return}
@@ -254,13 +185,13 @@ footer a{color:var(--muted)}
     var cover=d.cover_data&&d.cover_data.cover?d.cover_data.cover:''
     var firstImg=(d.image_data&&(d.image_data.no_watermark_image_list||[])[0])||''
     var vw=d.video_data&&d.video_data.width,vh=d.video_data&&d.video_data.height
-    var playUrl=d.video_data&&(d.video_data.nwm_video_url_HQ||d.video_data.nwm_video_url)
+    var playUrl=DT.playSrc(d)
     var startPlay=null
     if(d.type==='video'&&playUrl){
-      startPlay=clickToPlay(frame,cover,playUrl,vw,vh)
+      startPlay=DT.clickToPlay(frame,cover,playUrl,vw,vh,{lazy:true,alwaysCover:true,badge:'视频'})
     }else{
       var im0=el('img');im0.src=cover||firstImg;im0.alt='预览';im0.loading='lazy'
-      im0.addEventListener('load',function(){if(im0.naturalWidth&&im0.naturalHeight)applyAspect(frame,im0.naturalWidth,im0.naturalHeight)})
+      im0.addEventListener('load',function(){if(im0.naturalWidth&&im0.naturalHeight)DT.applyAspect(frame,im0.naturalWidth,im0.naturalHeight)})
       frame.appendChild(im0)
     }
     frame.appendChild(el('span','badge',d.type==='image'?'图集':'视频'))
@@ -277,15 +208,15 @@ footer a{color:var(--muted)}
     var acts=el('div','acts')
     if(d.type==='video'&&playUrl){
       if(startPlay){var pb=el('button','btn ghost','直接播放');pb.addEventListener('click',function(){startPlay()});acts.appendChild(pb)}
-      acts.appendChild(dlBtn(playUrl,'下载'))
-      acts.appendChild(copyBtn(playUrl,'复制直链'))
+      acts.appendChild(DT.downloadLink(playUrl,'下载'))
+      acts.appendChild(DT.copyButton('复制直链',playUrl))
     }
     if(d.type==='image'&&d.image_data){
       var imgs=d.image_data.no_watermark_image_list||[]
-      if(imgs[0])acts.appendChild(dlBtn(imgs[0],'下载'))
-      imgs.forEach(function(u,i){acts.appendChild(dlBtn(u,'图'+(i+1)))})
+      if(imgs[0])acts.appendChild(DT.downloadLink(imgs[0],'下载'))
+      imgs.forEach(function(u,i){acts.appendChild(DT.downloadLink(u,'图'+(i+1)))})
     }
-    if(d.platform&&d.video_id)acts.appendChild(shareBtn(d.platform,d.video_id))
+    if(d.platform&&d.video_id)acts.appendChild(DT.shareButton(d.platform,d.video_id))
     if(!lastGuest){
       var raw=el('button','btn ghost','原始 JSON')
       raw.addEventListener('click',function(){var p=$('#raw');if(!p){p=el('pre');p.id='raw';out.appendChild(p)}p.textContent=JSON.stringify(d,null,2)})
@@ -302,11 +233,10 @@ footer a{color:var(--muted)}
     }
   }
 
+  // --- events ---
   pasteBox.addEventListener('paste',function(){setTimeout(function(){parse(pasteBox.value)},0)})
   goBtn.addEventListener('click',function(){parse(pasteBox.value)})
   pasteBox.addEventListener('keydown',function(e){if((e.metaKey||e.ctrlKey)&&e.key==='Enter')parse(pasteBox.value)})
-
-  // Prefill + auto-parse from ?u= (used by the admin "重解" link).
   var pre=new URLSearchParams(location.search).get('u')
   if(pre){pasteBox.value=pre;if((keyInput.value||'').trim())parse(pre)}
 })();

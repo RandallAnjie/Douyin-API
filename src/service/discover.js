@@ -102,78 +102,59 @@ footer a{color:var(--muted)}
   <button class="lb-nav lb-next" id=lbNext aria-label=下一张>›</button>
   <div class=lb-idx id=lbIdx></div>
 </div>
+<script src="/ui.js"></script>
 <script>
 (function(){
-  var $=function(s){return document.querySelector(s)}
+  var DT=window.DT,$=DT.qs,el=DT.el
   var grid=$('#grid'),statusEl=$('#status'),pager=$('#pager')
   var sort='recent',page=1
-  function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
-  function ago(ms){var s=Math.floor((Date.now()-ms)/1000);if(s<60)return s+'秒前';if(s<3600)return Math.floor(s/60)+'分前';if(s<86400)return Math.floor(s/3600)+'时前';return Math.floor(s/86400)+'天前'}
+  var lb=DT.bindLightbox({root:'#lb',stage:'#lbStage',close:'#lbClose',prev:'#lbPrev',next:'#lbNext',idx:'#lbIdx'})
+
   function dur(d){if(!d)return '';var m=Math.floor(d/60),s=d%60;return m+':'+(s<10?'0':'')+s}
+
+  // --- render ---
   function card(row){
-    var a=el('div','card');a.style.cursor='pointer';a.addEventListener('click',function(){openModal(row)})
+    var a=el('div','card');a.style.cursor='pointer';a.addEventListener('click',function(){onCardClick(row)})
     var th=el('div','thumb')
     if(row.cover){var im=el('img');im.loading='lazy';im.src=row.cover;im.alt='';th.appendChild(im)}
     th.appendChild(el('span','badge',(row.type==='image'?'图集':'视频')))
     th.appendChild(el('span','hot','🔥'+(row.hits||1)))
-    var dl=el('a','datalink','📊');dl.href='/work?platform='+encodeURIComponent(row.platform)+'&id='+encodeURIComponent(row.video_id);dl.title='数据分析';dl.addEventListener('click',function(e){e.stopPropagation()});th.appendChild(dl)
+    var dl=el('a','datalink','📊');dl.href=DT.workUrl(row.platform,row.video_id);dl.title='数据分析';dl.addEventListener('click',function(e){e.stopPropagation()});th.appendChild(dl)
     a.appendChild(th)
     var info=el('div','info')
-    if(row.author_id){var wa=el('a','who',row.author||'未知作者');wa.href='/author?platform='+encodeURIComponent(row.platform)+'&id='+encodeURIComponent(row.author_id);wa.style.textDecoration='none';wa.addEventListener('click',function(e){e.stopPropagation()});info.appendChild(wa)}
+    if(row.author_id){var wa=el('a','who',row.author||'未知作者');wa.href=DT.authorUrl(row.platform,row.author_id);wa.style.textDecoration='none';wa.addEventListener('click',function(e){e.stopPropagation()});info.appendChild(wa)}
     else info.appendChild(el('div','who',row.author||'未知作者'))
     info.appendChild(el('div','ttl',row.description||'(无标题)'))
-    var d=dur(row.duration);info.appendChild(el('div','when',ago(row.updated_at)+(d?(' · '+d):'')))
+    var d=dur(row.duration);info.appendChild(el('div','when',DT.ago(row.updated_at)+(d?(' · '+d):'')))
     a.appendChild(info)
     return a
   }
-  async function load(){
+  function render(j){
+    var rows=j.data||[]
+    statusEl.textContent=j.total?('共 '+j.total+' 条 · 第 '+j.page+'/'+j.pages+' 页'):'还没有解析记录，去解析台试试'
+    rows.forEach(function(row){grid.appendChild(card(row))})
+    if(j.pages>1){
+      var prev=el('button',null,'← 上一页');prev.disabled=j.page<=1;prev.addEventListener('click',function(){page--;load()})
+      var next=el('button',null,'下一页 →');next.disabled=j.page>=j.pages;next.addEventListener('click',function(){page++;load()})
+      pager.appendChild(prev);pager.appendChild(el('span',null,j.page+' / '+j.pages));pager.appendChild(next)
+    }
+  }
+
+  // --- data ---
+  function load(){
     statusEl.textContent='加载中…';grid.innerHTML='';pager.innerHTML=''
-    try{
-      var r=await fetch('/api/discover?sort='+sort+'&page='+page+'&limit=12')
-      var j=await r.json();var rows=j.data||[]
-      statusEl.textContent=j.total?('共 '+j.total+' 条 · 第 '+j.page+'/'+j.pages+' 页'):'还没有解析记录，去解析台试试'
-      rows.forEach(function(row){grid.appendChild(card(row))})
-      if(j.pages>1){
-        var prev=el('button',null,'← 上一页');prev.disabled=j.page<=1;prev.addEventListener('click',function(){page--;load()})
-        var next=el('button',null,'下一页 →');next.disabled=j.page>=j.pages;next.addEventListener('click',function(){page++;load()})
-        pager.appendChild(prev);pager.appendChild(el('span',null,j.page+' / '+j.pages));pager.appendChild(next)
-      }
-    }catch(e){statusEl.textContent='加载失败：'+e.message}
+    DT.getJson('/api/discover?sort='+sort+'&page='+page+'&limit=12').then(render).catch(function(e){statusEl.textContent='加载失败：'+e.message})
+  }
+
+  // --- events ---
+  function onCardClick(row){
+    var slides=DT.slidesFromRow(row)
+    if(!slides.length){if(row.original_url)location.href=DT.shareUrl(row.original_url);return}
+    lb.open(slides)
   }
   function setSort(s){if(sort===s)return;sort=s;page=1;$('#tabRecent').classList.toggle('on',s==='recent');$('#tabHot').classList.toggle('on',s==='hot');load()}
   $('#tabRecent').addEventListener('click',function(){setSort('recent')})
   $('#tabHot').addEventListener('click',function(){setSort('hot')})
-
-  // lightbox
-  var lb=$('#lb'),lbStage=$('#lbStage'),lbIdx=$('#lbIdx'),lbPrev=$('#lbPrev'),lbNext=$('#lbNext')
-  var slides=[],cur=0
-  function openModal(row){
-    slides=[]
-    if(row.play)slides=[{type:'video',url:row.play}]
-    else if(row.extra&&row.extra.images&&row.extra.images.length)slides=row.extra.images.map(function(u){return{type:'image',url:u}})
-    else if(row.cover)slides=[{type:'image',url:row.cover}]
-    else{location.href='/?u='+encodeURIComponent(row.original_url||'');return}
-    cur=0;renderSlide();lb.classList.add('on');document.body.style.overflow='hidden'
-  }
-  function renderSlide(){
-    var s=slides[cur];lbStage.innerHTML=''
-    if(s.type==='video'){var v=document.createElement('video');v.controls=true;v.autoplay=true;v.setAttribute('playsinline','');v.src=s.url;lbStage.appendChild(v)}
-    else{var im=document.createElement('img');im.src=s.url;im.alt='';lbStage.appendChild(im)}
-    var multi=slides.length>1
-    lbPrev.style.display=multi?'':'none';lbNext.style.display=multi?'':'none'
-    lbIdx.style.display=multi?'':'none';lbIdx.textContent=(cur+1)+' / '+slides.length
-  }
-  function go(d){if(slides.length<2)return;cur=(cur+d+slides.length)%slides.length;renderSlide()}
-  function closeModal(){lb.classList.remove('on');lbStage.innerHTML='';document.body.style.overflow=''}
-  lbPrev.addEventListener('click',function(e){e.stopPropagation();go(-1)})
-  lbNext.addEventListener('click',function(e){e.stopPropagation();go(1)})
-  $('#lbClose').addEventListener('click',closeModal)
-  lb.addEventListener('click',function(e){if(e.target===lb)closeModal()})
-  document.addEventListener('keydown',function(e){if(!lb.classList.contains('on'))return;if(e.key==='Escape')closeModal();else if(e.key==='ArrowLeft')go(-1);else if(e.key==='ArrowRight')go(1)})
-  var tx=0
-  lb.addEventListener('touchstart',function(e){tx=e.changedTouches[0].clientX},{passive:true})
-  lb.addEventListener('touchend',function(e){var dx=e.changedTouches[0].clientX-tx;if(Math.abs(dx)>40)go(dx<0?1:-1)},{passive:true})
-
   load()
 })();
 </script>

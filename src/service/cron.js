@@ -82,7 +82,9 @@ export async function cronService (request, ctx) {
 
     // Refresh the public 热榜 board (热门视频 + 热搜 + 热歌) into D1, so the
     // /api/douyin/hot endpoint can serve from cache without ever hitting
-    // upstream itself.
+    // upstream itself. refreshHotBoard also waitUntil-warms nwm for the
+    // top 10 board videos (concurrency 2) — grow ingest already warms
+    // cover/avatar/nwm for its own 25-item feed batch.
     let hot = false
     if (doHot) try { hot = !!(await refreshHotBoard(ctx)) } catch (e) { errors.push(`hot-board ${e?.message || e}`) }
 

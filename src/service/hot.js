@@ -3,13 +3,18 @@
 // ONLY in cron (refreshHotBoard) and stores the board JSON in D1; the public
 // API reads D1 only and never hits upstream on a cache miss. Covers are
 // served via the R2-backed /img proxy. Words/songs deep-link into our own
-// /search; 热门视频 cards parse + store on click.
+// /search; 热门视频 cards play from a same-origin /proxy URL and ingest
+// in the background.
 import { rawJsonResponse } from '../utils/respond.js'
 import { metaGet, metaSet } from '../utils/db.js'
-import { imgProxyLink } from '../utils/proxy-link.js'
+import { imgProxyLink, proxyPath } from '../utils/proxy-link.js'
+import { warmUrl, mediaKey } from '../utils/r2cache.js'
+import { mediaCandidates } from '../hybrid/crawler.js'
 import * as douyinApp from '../douyin/app/crawler.js'
 
 const CACHE_KEY = 'hot:douyin:board'
+export const HOT_NWM_WARM_TOP = 10
+export const HOT_NWM_WARM_CONCURRENCY = 2
 
 function pickCover (obj) {
   const c = obj?.cover_large || obj?.cover_hd || obj?.cover_medium || obj?.word_cover || obj?.cover_thumb
@@ -44,16 +49,72 @@ async function buildBoard (ctx) {
       cover: pickCover(mi)
     }
   }).filter(x => x.title)
-  return { search, music: songs, videos }
+  return { board: { search, music: songs, videos }, feed }
+}
+
+// After a board refresh, pull nwm for the top N videos into R2 (bounded
+// concurrency, waitUntil) so /hot clicks hit cache. Grow ingest already
+// warms cover/avatar/nwm for its own feed batch — this covers the board's
+// own ranking, which is a separate fetch.
+export function scheduleHotNwmWarm (ctx, feed) {
+  const bucket = ctx.config.mediaR2
+  if (!bucket || !Array.isArray(feed) || !feed.length) return Promise.resolve()
+  const items = []
+  for (const a of feed) {
+    const card = douyinApp.feedCard(a)
+    if (!card.id || card.type === 'image') continue
+    items.push(a)
+    if (items.length >= HOT_NWM_WARM_TOP) break
+  }
+  if (!items.length) return Promise.resolve()
+  const headers = {
+    'User-Agent': ctx.config.douyin.userAgent,
+    Referer: 'https://www.douyin.com/'
+  }
+  const job = async () => {
+    let i = 0
+    const run = async () => {
+      while (i < items.length) {
+        const a = items[i++]
+        const cands = mediaCandidates('douyin', a, 'nwm')
+        if (!cands[0]) continue
+        try {
+          await warmUrl({ config: ctx.config }, bucket, mediaKey('douyin', a.aweme_id, 'nwm'), cands[0], headers, 'video/mp4')
+        } catch {}
+      }
+    }
+    const n = Math.min(HOT_NWM_WARM_CONCURRENCY, items.length)
+    await Promise.all(Array.from({ length: n }, run))
+  }
+  const p = job()
+  if (ctx.waitUntil) ctx.waitUntil(p)
+  return p
 }
 
 // Cron-only: fetch the board from upstream and persist it to D1. Returns the
 // board (or null on total failure). The public API never calls this path.
 export async function refreshHotBoard (ctx) {
-  const board = await buildBoard(ctx)
+  const { board, feed } = await buildBoard(ctx)
   if (!board.search.length && !board.music.length && !board.videos.length) return null
   await metaSet(ctx, CACHE_KEY, JSON.stringify(board))
+  scheduleHotNwmWarm(ctx, feed)
   return board
+}
+
+// Mint cover + same-origin play (HMAC, never the master token). Search
+// and music rows only get a cover — their ids are not video ids.
+export function decorateHotBoard (request, ctx, board) {
+  const rw = (x, kind) => {
+    const cover = x.cover ? imgProxyLink(request, ctx, x.cover) : null
+    if (kind !== 'video') return { ...x, cover }
+    const play = (x.id && x.type !== 'image') ? proxyPath(ctx, 'douyin', x.id, 'nwm') : null
+    return { ...x, cover, play }
+  }
+  return {
+    videos: (board.videos || []).map((x) => rw(x, 'video')),
+    search: (board.search || []).map((x) => rw(x, 'search')),
+    music: (board.music || []).map((x) => rw(x, 'music'))
+  }
 }
 
 export async function hotApiService (request, ctx) {
@@ -74,14 +135,13 @@ export async function hotApiService (request, ctx) {
   if (!board) {
     return rawJsonResponse({ code: 200, pending: true, updated: 0, videos: [], search: [], music: [] })
   }
-  // Route cover images through the cached /img proxy (R2-backed, signed).
-  const rw = (x) => ({ ...x, cover: x.cover ? imgProxyLink(request, ctx, x.cover) : null })
+  const decorated = decorateHotBoard(request, ctx, board)
   return rawJsonResponse({
     code: 200,
     updated,
-    videos: (board.videos || []).map(rw),
-    search: board.search.map(rw),
-    music: board.music.map(rw)
+    videos: decorated.videos,
+    search: decorated.search,
+    music: decorated.music
   })
 }
 
@@ -181,15 +241,19 @@ footer a{color:var(--muted)}
   <div class=lb-stage id=lbStage></div>
   <div class=lb-cap id=lbCap></div>
 </div>
+<script src="/ui.js"></script>
 <script>
 (function(){
-  var $=function(s){return document.querySelector(s)}
-  var list=$('#list'),grid=$('#grid'),statusEl=$('#status'),board='videos',data=null
-  function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
-  function fmt(n){n=Number(n)||0;if(n>=1e8)return (n/1e8).toFixed(1)+'亿';if(n>=1e4)return (n/1e4).toFixed(1)+'万';return String(n)}
+  var DT=window.DT,$=DT.qs,el=DT.el,fmt=DT.fmt
+  var list=$('#list'),grid=$('#grid'),statusEl=$('#status')
+  var board='videos',data=null
+  var lb=DT.bindLightbox({root:'#lb',stage:'#lbStage',close:'#lbClose',cap:'#lbCap'})
+
   function labelTag(l){if(l===3)return['hot','热'];if(l===1)return['new','新'];if(l===2)return['boom','爆'];return null}
+
+  // --- render ---
   function videoCard(r){
-    var c=el('div','card');c.addEventListener('click',function(){openVideo(r)})
+    var c=el('div','card');c.addEventListener('click',function(){onVideoClick(r)})
     var th=el('div','thumb')
     if(r.cover){var im=el('img');im.loading='lazy';im.src=r.cover;im.alt='';th.appendChild(im)}
     th.appendChild(el('span','badge',r.type==='image'?'图集':'视频'))
@@ -232,52 +296,63 @@ footer a{color:var(--muted)}
     grid.style.display=isV?'':'none';list.style.display=isV?'none':''
     var rows=isV?(data.videos||[]):board==='search'?(data.search||[]):(data.music||[])
     if(!rows.length){statusEl.textContent='暂时拉不到这个榜单，待会儿再来';return}
-    statusEl.textContent='共 '+rows.length+' 条'+(isV?' · 点开即自动解析入库':'')
+    statusEl.textContent='共 '+rows.length+' 条'+(isV?' · 点开即播，后台入库':'')
     rows.forEach(function(r){
       if(isV)grid.appendChild(videoCard(r))
       else list.appendChild(board==='search'?searchRow(r):musicRow(r))
     })
   }
-  async function load(){
+
+  // --- data ---
+  function fetchBoard(){return DT.getJson('/api/douyin/hot')}
+  function load(){
     statusEl.textContent='加载中…'
-    try{
-      var j=await (await fetch('/api/douyin/hot')).json()
+    fetchBoard().then(function(j){
       data=j
       if(j.updated){var d=new Date(j.updated);$('#upd').textContent='更新于 '+d.getHours()+':'+('0'+d.getMinutes()).slice(-2)}
       if(j.pending){statusEl.textContent='榜单随定时任务刷新，首次生成中，稍后再来';grid.style.display='none';list.style.display='none';return}
       render()
-    }catch(e){statusEl.textContent='加载失败：'+e.message}
+    }).catch(function(e){statusEl.textContent='加载失败：'+e.message})
+  }
+
+  // --- events ---
+  function slidesFor(r){
+    if(r.type==='image'&&r.cover)return[{type:'image',url:r.cover}]
+    if(r.play)return[{type:'video',url:r.play,poster:r.cover||'',width:r.width,height:r.height}]
+    if(r.cover)return[{type:'image',url:r.cover}]
+    return[]
+  }
+  function onVideoClick(r){
+    var ingestP=DT.ingest('douyin',r.id)
+    var gen
+    function replayFromParse(){
+      ingestP.then(function(j){
+        if(gen!==lb.generation())return
+        var d=j.data||{}
+        var src=DT.playSrc(d)
+        var imgs=DT.imagesFromParse(d)
+        if(d.type==='image'&&imgs[0])lb.replace(imgs.map(function(u){return{type:'image',url:u}}))
+        else if(src)lb.replace([{type:'video',url:src,poster:(d.cover_data&&d.cover_data.cover)||r.cover||'',width:d.video_data&&d.video_data.width,height:d.video_data&&d.video_data.height}])
+      }).catch(function(e){if(gen===lb.generation())lb.setCaption('解析失败：'+(e.message||e))})
+    }
+    var slides=slidesFor(r)
+    gen=lb.open(slides,{caption:'入库中…',onRetryParse:replayFromParse})
+    ingestP.then(function(j){
+      if(gen!==lb.generation())return
+      var d=j.data||{}
+      if(d.type==='image'){
+        var imgs=DT.imagesFromParse(d)
+        if(imgs[0])lb.replace(imgs.map(function(u){return{type:'image',url:u}}))
+      }
+      lb.setCaption('已入库 · <a href="'+DT.workUrl('douyin',r.id)+'">查看数据分析 →</a>')
+    }).catch(function(){
+      if(gen!==lb.generation())return
+      lb.setCaption(r.play?'播放中 · 入库稍后再试':'入库失败')
+    })
   }
   var tabs={videos:$('#tabV'),search:$('#tabS'),music:$('#tabM')}
   function setBoard(b){if(board===b)return;board=b;for(var k in tabs)tabs[k].classList.toggle('on',k===b);render()}
   for(var k in tabs)(function(b){tabs[b].addEventListener('click',function(){setBoard(b)})})(k)
-
-  // Lightbox — clicking a 热门视频 triggers a guest parse (which stores the
-  // work to D1 + warms media into R2), then plays it.
-  var lb=$('#lb'),lbStage=$('#lbStage'),lbCap=$('#lbCap')
-  function closeLb(){lb.classList.remove('on');lbStage.innerHTML='';lbCap.innerHTML='';document.body.style.overflow=''}
-  $('#lbClose').addEventListener('click',closeLb)
-  lb.addEventListener('click',function(e){if(e.target===lb)closeLb()})
-  document.addEventListener('keydown',function(e){if(e.key==='Escape'&&lb.classList.contains('on'))closeLb()})
-  async function openVideo(r){
-    lb.classList.add('on');document.body.style.overflow='hidden'
-    lbStage.innerHTML='<div class=lb-msg>解析并入库中…</div>';lbCap.innerHTML=''
-    try{
-      var u='https://www.douyin.com/video/'+encodeURIComponent(r.id)
-      var j=await (await fetch('/api/hybrid/video_data?url='+encodeURIComponent(u)+'&minimal=1&proxy=1')).json()
-      var o=j.data||{}
-      var work='/work?platform=douyin&id='+encodeURIComponent(r.id)
-      lbStage.innerHTML=''
-      if(o.type==='image'&&o.images&&o.images.length){var im=document.createElement('img');im.src=o.images[0];im.alt='';lbStage.appendChild(im)}
-      else{
-        var vd=o.video_data||{}
-        var src=vd.nwm_video_url_HQ||vd.nwm_video_url||vd.wm_video_url_HQ||vd.wm_video_url||o.play
-        if(src){var v=document.createElement('video');v.controls=true;v.autoplay=true;v.setAttribute('playsinline','');v.src=src;lbStage.appendChild(v)}
-        else{var c=o.cover_data&&o.cover_data.cover;if(c){var ci=document.createElement('img');ci.src=c;lbStage.appendChild(ci)}else lbStage.innerHTML='<div class=lb-msg>已入库，但暂时拿不到可播放地址</div>'}
-      }
-      lbCap.innerHTML='已入库 · <a href="'+work+'">查看数据分析 →</a>'
-    }catch(e){lbStage.innerHTML='<div class=lb-msg>解析失败：'+(e.message||e)+'</div>'}
-  }
   load()
 })();
 </script>

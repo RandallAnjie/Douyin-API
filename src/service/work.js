@@ -106,16 +106,15 @@ svg{width:100%;height:220px;display:block}
     <p class="status sk-sr">加载中…</p>
   </div>
 </main>
+<script src="/ui.js"></script>
 <script>
 (function(){
-  var $=function(s){return document.querySelector(s)}
+  var DT=window.DT,$=DT.qs,el=DT.el,fmt=DT.fmtW
   var q=new URLSearchParams(location.search)
   var platform=q.get('platform'),id=q.get('id')
   var COLORS={play:'#3fe0c5',digg:'#ff5d6c',comment:'#e7b15a',share:'#7aa2ff',collect:'#c08bff',danmaku:'#5bd6a8',coin:'#ffd166'}
   var LABELS={play:'播放',digg:'点赞',comment:'评论',share:'转发',collect:'收藏',danmaku:'弹幕',coin:'投币'}
   var SERIES=['play','digg','comment','share','danmaku','coin','collect']
-  function fmt(n){n=Number(n)||0;return n>=10000?(n/10000).toFixed(1)+'w':String(n)}
-  function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
   function tstr(ms){if(!ms)return '—';var d=new Date(ms);return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2)+' '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)}
   function datestr(sec){if(!sec)return '—';return tstr(sec*1000).slice(0,10)}
 
@@ -149,68 +148,15 @@ svg{width:100%;height:220px;display:block}
     return legend+svg+axis
   }
 
-  function commentsUrl(p,vid){return '/api/comments?platform='+encodeURIComponent(p)+'&id='+encodeURIComponent(vid)+'&limit=30'}
-  async function load(){
+  // --- data ---
+  function load(){
     if(!platform||!id){$('#app').innerHTML='<p class=status>缺少 platform / id</p>';return}
-    var commentsP=fetch(commentsUrl(platform,id)).then(function(r){return r.json()}).catch(function(e){return {__err:e}})
-    try{
-      var r=await fetch('/api/work?platform='+encodeURIComponent(platform)+'&id='+encodeURIComponent(id))
-      if(r.status!==200){var j=await r.json().catch(function(){return{}});$('#app').innerHTML='<p class=status>'+(j.message||('HTTP '+r.status))+'</p>';return}
-      var d=await r.json();render(d)
-      fillComments(await commentsP)
-    }catch(e){$('#app').innerHTML='<p class=status>加载失败：'+e.message+'</p>'}
-  }
-  function withFlag(href,flag){if(!href)return href;return href+(href.indexOf('?')>-1?'&':'?')+flag}
-  function toast(msg){
-    var t=el('div','toast',msg)
-    document.body.appendChild(t)
-    setTimeout(function(){if(t.parentNode)t.parentNode.removeChild(t)},1600)
-  }
-  function fallbackCopy(text,done){
-    var ta=document.createElement('textarea')
-    ta.value=text;ta.setAttribute('readonly','');ta.style.cssText='position:fixed;left:-9999px;top:0'
-    document.body.appendChild(ta);ta.select();ta.setSelectionRange(0,text.length)
-    var ok=false
-    try{ok=document.execCommand('copy')}catch(e){}
-    document.body.removeChild(ta)
-    if(ok)done()
-  }
-  function copyText(text,done){
-    if(navigator.clipboard&&navigator.clipboard.writeText){
-      navigator.clipboard.writeText(text).then(done,function(){fallbackCopy(text,done)})
-    }else fallbackCopy(text,done)
-  }
-  function applyAspect(frame,w,h){
-    w=Number(w)||0;h=Number(h)||0
-    if(!(w>0&&h>0))return
-    frame.style.aspectRatio=w+' / '+h
-    if(w>=h)frame.classList.add('is-h');else frame.classList.remove('is-h')
-  }
-  function clickToPlay(frame,cover,playUrl,w,h){
-    var started=false
-    function startPlay(){
-      if(started)return
-      started=true
-      frame.style.cursor=''
-      frame.innerHTML=''
-      var v=document.createElement('video')
-      v.controls=true;v.autoplay=true;v.preload='metadata'
-      v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','')
-      if(cover)v.poster=cover
-      var src=document.createElement('source')
-      src.src=playUrl;src.type='video/mp4'
-      v.appendChild(src)
-      v.addEventListener('playing',function(){v.preload='auto'})
-      v.addEventListener('loadedmetadata',function(){if(v.videoWidth&&v.videoHeight)applyAspect(frame,v.videoWidth,v.videoHeight)})
-      frame.appendChild(v)
-      var p=v.play();if(p&&p.catch)p.catch(function(){})
-    }
-    applyAspect(frame,w,h)
-    if(cover){var im=el('img');im.src=cover;im.alt='预览';frame.appendChild(im)}
-    frame.appendChild(el('span','playhint','▶'))
-    frame.style.cursor='pointer'
-    frame.addEventListener('click',startPlay)
-    return startPlay
+    var commentsP=DT.getJson(DT.commentsUrl(platform,id)).catch(function(e){return {__err:e}})
+    DT.getJson('/api/work?platform='+encodeURIComponent(platform)+'&id='+encodeURIComponent(id)).then(function(d){
+      if(d.__status!==200){$('#app').innerHTML='<p class=status>'+(d.message||('HTTP '+d.__status))+'</p>';return}
+      render(d)
+      commentsP.then(fillComments)
+    }).catch(function(e){$('#app').innerHTML='<p class=status>加载失败：'+e.message+'</p>'})
   }
   function render(d){
     var w=d.work||{},au=d.author||{},hist=d.history||[]
@@ -220,8 +166,8 @@ svg{width:100%;height:220px;display:block}
     var frame=el('div','frame')
     var vw=extra.width,vh=extra.height
     var startPlay=null
-    if(w.play){startPlay=clickToPlay(frame,w.cover,w.play,vw,vh)}
-    else if(w.cover){var im=el('img');im.src=w.cover;im.addEventListener('load',function(){if(im.naturalWidth&&im.naturalHeight)applyAspect(frame,im.naturalWidth,im.naturalHeight)});frame.appendChild(im)}
+    if(w.play){startPlay=DT.clickToPlay(frame,w.cover,w.play,vw,vh)}
+    else if(w.cover){var im=el('img');im.src=w.cover;im.addEventListener('load',function(){if(im.naturalWidth&&im.naturalHeight)DT.applyAspect(frame,im.naturalWidth,im.naturalHeight)});frame.appendChild(im)}
     head.appendChild(frame)
     var meta=el('div','meta')
     meta.appendChild(el('div','title',w.description||'(无标题)'))
@@ -229,7 +175,7 @@ svg{width:100%;height:220px;display:block}
     var ab=el('div','author')
     if(au.avatar){var av=el('img');av.src=au.avatar;ab.appendChild(av)}
     var ai=el('div')
-    if(w.author_id){var na=el('a','nm',(au.name||w.author||'未知作者'));na.href='/author?platform='+encodeURIComponent(w.platform)+'&id='+encodeURIComponent(w.author_id);na.style.color='var(--ink)';na.style.textDecoration='none';ai.appendChild(na)}
+    if(w.author_id){var na=el('a','nm',(au.name||w.author||'未知作者'));na.href=DT.authorUrl(w.platform,w.author_id);na.style.color='var(--ink)';na.style.textDecoration='none';ai.appendChild(na)}
     else ai.appendChild(el('div','nm',(au.name||w.author||'未知作者')))
     if(aex.follower!=null)ai.appendChild(el('div','fo','粉丝 '+fmt(aex.follower)))
     ab.appendChild(ai);meta.appendChild(ab)
@@ -241,17 +187,12 @@ svg{width:100%;height:220px;display:block}
     if(Array.isArray(w.tags)&&w.tags.length){var tg=el('div','chips');w.tags.slice(0,15).forEach(function(t){var c=el('a','chip','#'+t);c.href='/search?q='+encodeURIComponent(t);tg.appendChild(c)});meta.appendChild(tg)}
     var acts=el('div','acts')
     if(startPlay){var pb=el('button','btn','直接播放');pb.addEventListener('click',function(){startPlay()});acts.appendChild(pb)}
-    var go=el('a','btn go','重新解析(加一个数据点)');go.href='/?u='+encodeURIComponent(w.original_url||'');acts.appendChild(go)
+    var go=el('a','btn go','重新解析(加一个数据点)');go.href=DT.shareUrl(w.original_url||'');acts.appendChild(go)
     if(w.original_url){var o=el('a','btn','原链');o.href=w.original_url;o.target='_blank';o.rel='noopener';acts.appendChild(o)}
     var dlHref=w.play
     if(!dlHref&&Array.isArray(extra.images)&&extra.images[0])dlHref=extra.images[0]
-    if(dlHref){var dl=el('a','btn','下载');dl.href=withFlag(dlHref,'download=1');dl.setAttribute('download','');acts.appendChild(dl)}
-    var sh=el('button','btn','分享')
-    sh.addEventListener('click',function(){
-      var link=location.origin+'/work?platform='+encodeURIComponent(w.platform||platform)+'&id='+encodeURIComponent(w.video_id||id)
-      copyText(link,function(){var old=sh.textContent;sh.textContent='已复制';toast('已复制');setTimeout(function(){sh.textContent=old},1200)})
-    })
-    acts.appendChild(sh)
+    if(dlHref)acts.appendChild(DT.downloadLink(dlHref,'下载','btn'))
+    acts.appendChild(DT.shareButton(w.platform||platform,w.video_id||id,'btn'))
     meta.appendChild(acts)
     head.appendChild(meta)
     app.appendChild(head)

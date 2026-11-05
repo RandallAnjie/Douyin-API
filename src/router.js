@@ -22,6 +22,7 @@ import { searchPageService, searchApiService } from './service/search.js'
 import { authorPageService, authorApiService } from './service/author.js'
 import { cronService } from './service/cron.js'
 import { imgService } from './service/img.js'
+import { uiScriptService } from './service/ui.js'
 import appService from './service/app.js'
 import docsService from './service/docs.js'
 import { HTTPException } from './utils/http-exception.js'
@@ -38,6 +39,9 @@ export async function router (request, ctx) {
 
   if (pathname === '/favicon.ico') {
     return new Response(null, { status: 204 })
+  }
+  if (pathname === '/ui.js' && request.method === 'GET') {
+    return uiScriptService()
   }
   if (pathname === '/__edge_cron' && request.method === 'POST') {
     return cronService(request, ctx)
