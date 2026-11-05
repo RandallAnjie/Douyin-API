@@ -21,8 +21,9 @@ export async function hybridService (route, request, ctx) {
     const authed = isAuthorised(request, ctx, PLATFORM, 'video_data', target)
     let guest = false
     if (!authed) {
-      // Guest: allowed to parse, but rate-limited and restricted to
-      // minimal + temporary proxied links (never raw JSON).
+      // Guest: allowed to parse, restricted to minimal + temporary
+      // proxied links (never raw JSON). Frequency limit applies only
+      // when guest.limit > 0; 0 is unlimited and needs no store.
       const g = ctx.config.guest
       if (!g.enabled) {
         throw new HTTPException(401, { message: 'Unauthorized: pass ?token=<secret>' })

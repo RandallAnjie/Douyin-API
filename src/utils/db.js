@@ -273,9 +273,14 @@ export async function getComments (ctx, platform, videoId, limit = 20, offset = 
 }
 
 // --- rate limit (prefers KV, falls back to D1) ---
+// limit <= 0 means unlimited: allow immediately, no KV/D1 required.
 export async function rateLimitHit (ctx, ip, limit, windowSec) {
-  if (ctx.config.kv) return rateLimitKV(ctx.config.kv, ip, limit, windowSec)
-  if (ctx.config.d1) return rateLimitD1(ctx.config.d1, ip, limit, windowSec)
+  const cap = Number(limit)
+  if (!Number.isFinite(cap) || cap <= 0) {
+    return { allowed: true, count: 0, limit: 0 }
+  }
+  if (ctx.config.kv) return rateLimitKV(ctx.config.kv, ip, cap, windowSec)
+  if (ctx.config.d1) return rateLimitD1(ctx.config.d1, ip, cap, windowSec)
   return { allowed: false, reason: 'no-store' }
 }
 

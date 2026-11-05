@@ -1,11 +1,14 @@
-// GET /shortcut — Chinese hand-built iOS Shortcut guide. Reuses the
-// /docs page chrome (same type, colors, width) so it does not introduce
-// a new visual language.
+// GET /shortcut — Chinese iOS Shortcut guide. Reuses the /docs page
+// chrome (same type, colors, width) so it does not introduce a new
+// visual language. Ready-made install link first; hand-built steps
+// stay as the fallback.
 import { proxyBase } from '../utils/proxy-link.js'
+
+export const SHORTCUT_INSTALL_URL = 'https://www.icloud.com/shortcuts/d8c029c7084e49f78fe9e7735a237ed3'
 
 export default async function shortcutService (request, ctx) {
   const origin = proxyBase(request, ctx)
-  const html = PAGE.split('{{ORIGIN}}').join(origin)
+  const html = PAGE.split('{{ORIGIN}}').join(origin).split('{{INSTALL}}').join(SHORTCUT_INSTALL_URL)
   return new Response(html, {
     status: 200,
     headers: { 'content-type': 'text/html; charset=utf-8' }
@@ -35,7 +38,17 @@ const PAGE = `<!doctype html>
 </style></head>
 <body>
 <h1>抖音转分享链接</h1>
-<small>用 iOS「快捷指令」把抖音 App 分享口令转成本站链接，发给微信 / 信息里的朋友。约 5 步，手建即可。</small>
+<small>用 iOS「快捷指令」把抖音 App 分享口令转成本站链接，发给微信 / 信息里的朋友。推荐直接添加现成指令；不想用现成的可以按下面手建。</small>
+
+<h2>一键添加快捷指令</h2>
+<p>推荐：点下面打开 iCloud，确认后即可添加到「快捷指令」。不用自己搭步骤。</p>
+<div class=row>
+  <a href="{{INSTALL}}" target="_blank" rel="noopener">一键添加快捷指令</a>
+  <button type=button data-copy="{{INSTALL}}">复制链接</button>
+</div>
+
+<h2>不想用现成的？手动搭建</h2>
+<p>下面约 5 步，在「快捷指令」里手建同一条指令。</p>
 
 <h2>1. 新建快捷指令</h2>
 <ol>
@@ -59,7 +72,7 @@ const PAGE = `<!doctype html>
 <ul>
   <li>方法：<code>POST</code></li>
   <li>请求体：<code>文件</code> / <code>文本</code>，内容选上一步的文本。</li>
-  <li>可选：若你有访问钥匙，把 <code>&amp;token=你的钥匙</code> 接到 URL 后面，可跳过游客限流。没有钥匙也能用（与解析台游客规则相同）。</li>
+  <li>一般不用加 <code>token</code>。只有站点管理员打开了游客限流时，才需要把 <code>&amp;token=你的钥匙</code> 接到 URL 后面。</li>
 </ul>
 <p>GET 写法（先加一步 <code>URL 编码</code>，再拼到 <code>text=</code> 后面）：</p>
 <div class=row>
@@ -93,7 +106,7 @@ const PAGE = `<!doctype html>
 <textarea id=try placeholder="3.05 复制打开抖音，看看【xxx的作品】 … https://v.douyin.com/AbCdEf/ F@a.Bc 05/12"></textarea>
 <div class=row>
   <button type=button id=go>转换</button>
-  <small>游客有次数上限；失败时下面会显示接口返回的原文。</small>
+  <small>失败时下面会显示接口返回的原文。</small>
 </div>
 <pre class=out id=out></pre>
 

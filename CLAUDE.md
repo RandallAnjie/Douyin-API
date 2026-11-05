@@ -107,8 +107,10 @@ unauthenticated guests: `isAuthorised()` false → guest branch in
 `service/hybrid.js`. Guests are forced to `minimal=true` + `proxy=1` +
 no `refresh` (never raw JSON), get TEMPORARY proxy links (`proxyLink`
 with `expSec` → `&exp=` + HMAC over `proxy{platform}{id}{exp}`, checked
-by `requireProxyAuth`), and are IP rate-limited (`rateLimitHit` prefers
-`DOUYIN_KV`, falls back to `DOUYIN_D1`; no store → 503) and respect
+by `requireProxyAuth`). Guest frequency limiting is **off by default**
+(`config.guest.limit` 0 = unlimited, no D1/KV required). Set
+`GUEST_RATE_LIMIT` / `GUEST_LIMIT` > 0 to re-enable (`rateLimitHit`
+prefers `DOUYIN_KV`, falls back to `DOUYIN_D1`; no store → 503). Respect
 `GUEST_ENABLED`. The raw per-platform `/api/douyin|tiktok/*` endpoints
 and `/admin` stay token-only.
 

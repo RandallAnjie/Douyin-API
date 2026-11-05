@@ -201,7 +201,7 @@ try {
 
   r = await shareService(new Request('https://x/api/share?format=json&url=' + encodeURIComponent(`https://www.douyin.com/video/${ID}`)), ctxNoStore)
   const noStore = await r.json()
-  ok('guest without store is 503 json', r.status === 503 && noStore.code === 503)
+  ok('guest without store is allowed when limit is 0', r.status === 200 && noStore.code === 200 && noStore.platform === 'douyin')
 
   r = await shareService(new Request('https://x/api/share?format=text&url=' + encodeURIComponent(`https://www.douyin.com/video/${ID}`)), ctxGuest)
   body = await r.text()
@@ -229,6 +229,12 @@ try {
   ok('shortcut guide has 5 steps and Douyin trigger',
     html.includes('抖音转分享链接') && html.includes('获取输入的文本') && html.includes('获取 URL 内容') &&
     html.includes('/api/share?format=text&text_full=1') && html.includes('分享') && html.includes('轻点背面'))
+  ok('shortcut one-tap install + manual fallback',
+    html.includes('一键添加快捷指令') &&
+    html.includes('https://www.icloud.com/shortcuts/d8c029c7084e49f78fe9e7735a237ed3') &&
+    html.includes('不想用现成的？手动搭建') &&
+    !html.includes('可跳过游客限流') &&
+    !html.includes('游客有次数上限'))
   ok('shortcut CORS open', r.headers.get('access-control-allow-origin') === '*')
 
   r = await call('https://x/api/share?format=text&token=' + TOKEN + '&url=' + encodeURIComponent(`https://www.douyin.com/video/${ID}`))
