@@ -223,5 +223,54 @@ try {
   globalThis.fetch = realFetch
 }
 
+// 13) /api/share + /shortcut (routing / formats; ingest is mocked).
+r = await call('https://x/shortcut')
+html = await r.text()
+ok('GET /shortcut -> 200 html', r.status === 200 && html.includes('抖音转分享链接') && html.includes('/api/share'))
+r = await call('https://x/docs')
+html = await r.text()
+ok('docs lists /api/share and /shortcut', html.includes('/api/share') && html.includes('href="/shortcut"'))
+r = await call('https://x/')
+html = await r.text()
+ok('解析台 footer links /shortcut', html.includes('href="/shortcut"') && html.includes('快捷指令'))
+
+r = await call('https://x/api/share?format=text&text=没有链接')
+ok('share no token + GUEST_ENABLED=0 -> 401 or 400', r.status === 401 || r.status === 400)
+
+globalThis.fetch = async (input) => {
+  const url = String(input)
+  if (url.includes('/share/video/')) {
+    return new Response(SHARE_HTML, { status: 200, headers: { 'content-type': 'text/html' } })
+  }
+  if (/douyin\.com|bytedance\.com|iesdouyin\.com|amemv\.com|snssdk\.com|tiktok\.com/.test(url)) {
+    return new Response('blocked', { status: 403 })
+  }
+  return realFetch(input)
+}
+try {
+  r = await call('https://x/api/share?format=text&token=secret123&url=' + encodeURIComponent('https://www.douyin.com/video/7372484719365098803'))
+  let shareText = await r.text()
+  ok('share format=text work link', r.status === 200 && shareText === 'https://x/work?platform=douyin&id=7372484719365098803', shareText)
+  ok('share CORS open', r.headers.get('access-control-allow-origin') === '*')
+
+  r = await call('https://x/api/share?format=json&token=secret123&url=' + encodeURIComponent('https://www.douyin.com/video/7372484719365098803'))
+  body = await r.json()
+  ok('share format=json', r.status === 200 && body.platform === 'douyin' && body.id === '7372484719365098803' &&
+    typeof body.play === 'string' && body.play.startsWith('/proxy?') && !JSON.stringify(body).includes('secret123'))
+
+  r = await call('https://x/api/share?format=redirect&token=secret123&url=' + encodeURIComponent('https://www.douyin.com/video/7372484719365098803'))
+  ok('share format=redirect 302', r.status === 302 && r.headers.get('location') === 'https://x/work?platform=douyin&id=7372484719365098803')
+
+  r = await call('https://x/api/share?format=text&token=secret123', {
+    method: 'POST',
+    headers: { 'content-type': 'text/plain; charset=utf-8' },
+    body: '3.05 复制打开抖音，看看【xxx的作品】 https://www.douyin.com/video/7372484719365098803/ F@a.Bc 05/12'
+  })
+  shareText = await r.text()
+  ok('share POST raw body', r.status === 200 && shareText === 'https://x/work?platform=douyin&id=7372484719365098803', shareText)
+} finally {
+  globalThis.fetch = realFetch
+}
+
 console.log(failed === 0 ? '\nAll e2e assertions passed.' : `\n${failed} e2e assertion(s) failed.`)
 process.exit(failed === 0 ? 0 : 1)
